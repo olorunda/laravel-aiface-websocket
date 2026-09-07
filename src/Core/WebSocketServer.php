@@ -29,7 +29,10 @@ class WebSocketServer
     
     protected mixed $serverSocket = null;
     protected mixed $ipcSocket = null;
+    protected mixed $ipcTcpSocket = null;
     protected string $ipcPath;
+    protected string $ipcHost = '127.0.0.1';
+    protected int $ipcPort = 7789;
     protected ConnectionRegistry $registry;
     protected StorageService $storage;
     protected WebhookForwarder $webhooks;
@@ -48,7 +51,9 @@ class WebSocketServer
         $this->registry = $registry ?? new ConnectionRegistry();
         $this->storage = $storage ?? new StorageService($config);
         $this->webhooks = $webhooks ?? new WebhookForwarder($config);
-        $this->ipcPath = sys_get_temp_dir() . '/aiface_ipc_' . $this->port . '.sock';
+        $this->ipcHost = (string) ($config['server']['ipc_host'] ?? '127.0.0.1');
+        $this->ipcPort = (int) ($config['server']['ipc_port'] ?? ($this->port + 1));
+        $this->ipcPath = '/tmp/aiface_ipc_' . $this->port . '.sock';
     }
 
     public function getRegistry(): ConnectionRegistry
@@ -99,16 +104,35 @@ class WebSocketServer
      */
     protected function initIpcSocket(): void
     {
+        $errno = 0;
+        $errstr = '';
+
+        // 1. Setup local TCP socket (works seamlessly between CLI and PHP-FPM / Laravel Herd)
+        $tcpUri = sprintf('tcp://%s:%d', $this->ipcHost, $this->ipcPort);
+        $this->ipcTcpSocket = @stream_socket_server($tcpUri, $errno, $errstr, STREAM_SERVER_BIND | STREAM_SERVER_LISTEN);
+        if ($this->ipcTcpSocket) {
+            stream_set_blocking($this->ipcTcpSocket, false);
+            $this->log("info", "AiFace local TCP IPC bridge listening on {$tcpUri}");
+        }
+
+        // 2. Setup /tmp Unix domain socket as fallback
         if (file_exists($this->ipcPath)) {
             @unlink($this->ipcPath);
         }
 
-        $errno = 0;
-        $errstr = '';
         $this->ipcSocket = @stream_socket_server('unix://' . $this->ipcPath, $errno, $errstr);
         if ($this->ipcSocket) {
             stream_set_blocking($this->ipcSocket, false);
             @chmod($this->ipcPath, 0777);
+        }
+
+        // 3. Link to sys_get_temp_dir() for backward compatibility
+        $sysPath = sys_get_temp_dir() . '/aiface_ipc_' . $this->port . '.sock';
+        if ($sysPath !== $this->ipcPath) {
+            if (file_exists($sysPath)) {
+                @unlink($sysPath);
+            }
+            @symlink($this->ipcPath, $sysPath);
         }
     }
 
@@ -153,6 +177,9 @@ class WebSocketServer
         if ($this->ipcSocket) {
             $read[] = $this->ipcSocket;
         }
+        if ($this->ipcTcpSocket) {
+            $read[] = $this->ipcTcpSocket;
+        }
 
         /** @var array<int, DeviceConnection> $socketToConn */
         $socketToConn = [];
@@ -176,8 +203,8 @@ class WebSocketServer
         foreach ($read as $socket) {
             if ($socket === $this->serverSocket) {
                 $this->acceptConnection();
-            } elseif ($socket === $this->ipcSocket) {
-                $this->handleIpcClient();
+            } elseif ($socket === $this->ipcSocket || $socket === $this->ipcTcpSocket) {
+                $this->handleIpcClient($socket);
             } else {
                 $sockId = is_resource($socket) ? (int) $socket : spl_object_id($socket);
                 if (isset($socketToConn[$sockId])) {
@@ -675,9 +702,13 @@ class WebSocketServer
     /**
      * Handle incoming command from local IPC socket (CLI or HTTP API).
      */
-    protected function handleIpcClient(): void
+    protected function handleIpcClient(mixed $listenSocket = null): void
     {
-        $ipcClient = @stream_socket_accept($this->ipcSocket, 0);
+        $serverSocket = $listenSocket ?? $this->ipcTcpSocket ?? $this->ipcSocket;
+        if (!$serverSocket) {
+            return;
+        }
+        $ipcClient = @stream_socket_accept($serverSocket, 0);
         if (!$ipcClient) {
             return;
         }
@@ -823,6 +854,10 @@ class WebSocketServer
 
         if (is_resource($this->ipcSocket)) {
             @fclose($this->ipcSocket);
+        }
+
+        if (is_resource($this->ipcTcpSocket)) {
+            @fclose($this->ipcTcpSocket);
         }
 
         if (file_exists($this->ipcPath)) {

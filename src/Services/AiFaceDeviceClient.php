@@ -28,24 +28,55 @@ class AiFaceDeviceClient
     }
 
     /**
+     * Establish IPC connection to running WebSocket daemon via local TCP or Unix socket.
+     */
+    protected function connectIpc(float $timeout = 2.0)
+    {
+        $ipcHost = $this->config['server']['ipc_host'] ?? '127.0.0.1';
+        $port = (int) ($this->config['server']['port'] ?? 7788);
+        $ipcPort = (int) ($this->config['server']['ipc_port'] ?? ($port + 1));
+
+        // 1. Try TCP loopback bridge (works 100% reliably between CLI and PHP-FPM / Laravel Herd)
+        $fp = @stream_socket_client("tcp://{$ipcHost}:{$ipcPort}", $errno, $errstr, $timeout);
+        if ($fp) {
+            return $fp;
+        }
+
+        // 2. Try standard /tmp Unix socket
+        $tmpPath = "/tmp/aiface_ipc_{$port}.sock";
+        if (file_exists($tmpPath)) {
+            $fp = @stream_socket_client("unix://{$tmpPath}", $errno, $errstr, $timeout);
+            if ($fp) {
+                return $fp;
+            }
+        }
+
+        // 3. Try sys_get_temp_dir() Unix socket
+        $sysPath = sys_get_temp_dir() . "/aiface_ipc_{$port}.sock";
+        if (file_exists($sysPath)) {
+            $fp = @stream_socket_client("unix://{$sysPath}", $errno, $errstr, $timeout);
+            if ($fp) {
+                return $fp;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Send arbitrary command to device via WebSocket daemon IPC bridge.
      */
     public function send(string $cmd, array $params = [], ?float $timeout = null): array
     {
         $timeout = $timeout ?? (float) ($this->config['server']['command_timeout'] ?? 10.0);
 
-        if (!file_exists($this->ipcPath)) {
-            return [
-                'result' => false,
-                'error' => 'AiFace WebSocket daemon is not running (IPC socket not found). Run "php artisan aiface:serve".',
-            ];
-        }
-
-        $fp = @stream_socket_client('unix://' . $this->ipcPath, $errno, $errstr, 2.0);
+        $fp = $this->connectIpc(2.0);
         if (!$fp) {
+            $port = (int) ($this->config['server']['port'] ?? 7788);
+            $ipcPort = (int) ($this->config['server']['ipc_port'] ?? ($port + 1));
             return [
                 'result' => false,
-                'error' => "Failed to connect to AiFace daemon IPC socket: [{$errno}] {$errstr}",
+                'error' => "AiFace WebSocket daemon is not running (could not connect to IPC on 127.0.0.1:{$ipcPort} or /tmp/aiface_ipc_{$port}.sock). Please start the daemon using 'php artisan aiface:serve'.",
             ];
         }
 
@@ -110,7 +141,8 @@ class AiFaceDeviceClient
 
     public function setUserPassword(int|string $enrollId, string $name, int|string $pwd, int $admin = 0): array
     {
-        return $this->setUserInfo($enrollId, $name, Protocol::BACKUP_PASSWORD, (int) $pwd, $admin);
+        $record = (is_numeric($pwd) && $pwd !== '') ? (int) $pwd : $pwd;
+        return $this->setUserInfo($enrollId, $name, Protocol::BACKUP_PASSWORD, $record, $admin);
     }
 
     public function setUserCard(int|string $enrollId, string $name, int|string $cardNumber, int $admin = 0): array

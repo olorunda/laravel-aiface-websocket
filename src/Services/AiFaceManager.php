@@ -31,15 +31,47 @@ class AiFaceManager
     }
 
     /**
+     * Establish IPC connection to running WebSocket daemon via local TCP or Unix socket.
+     */
+    protected function connectIpc(float $timeout = 1.0)
+    {
+        $ipcHost = $this->config['server']['ipc_host'] ?? '127.0.0.1';
+        $port = (int) ($this->config['server']['port'] ?? 7788);
+        $ipcPort = (int) ($this->config['server']['ipc_port'] ?? ($port + 1));
+
+        // 1. Try TCP loopback bridge
+        $fp = @stream_socket_client("tcp://{$ipcHost}:{$ipcPort}", $errno, $errstr, $timeout);
+        if ($fp) {
+            return $fp;
+        }
+
+        // 2. Try standard /tmp Unix socket
+        $tmpPath = "/tmp/aiface_ipc_{$port}.sock";
+        if (file_exists($tmpPath)) {
+            $fp = @stream_socket_client("unix://{$tmpPath}", $errno, $errstr, $timeout);
+            if ($fp) {
+                return $fp;
+            }
+        }
+
+        // 3. Try sys_get_temp_dir() Unix socket
+        $sysPath = sys_get_temp_dir() . "/aiface_ipc_{$port}.sock";
+        if (file_exists($sysPath)) {
+            $fp = @stream_socket_client("unix://{$sysPath}", $errno, $errstr, $timeout);
+            if ($fp) {
+                return $fp;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Get list of currently connected online devices via the running daemon.
      */
     public function getOnlineDevices(): array
     {
-        if (!file_exists($this->ipcPath)) {
-            return [];
-        }
-
-        $fp = @stream_socket_client('unix://' . $this->ipcPath, $errno, $errstr, 1.0);
+        $fp = $this->connectIpc(1.0);
         if (!$fp) {
             return [];
         }

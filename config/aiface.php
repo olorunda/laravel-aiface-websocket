@@ -20,6 +20,10 @@ return [
         // Command response wait timeout in seconds
         'command_timeout' => (int) env('AIFACE_COMMAND_TIMEOUT', 10),
 
+        // Local IPC bridge for CLI / PHP-FPM communication (default: 127.0.0.1:7789)
+        'ipc_host' => env('AIFACE_IPC_HOST', '127.0.0.1'),
+        'ipc_port' => (int) env('AIFACE_IPC_PORT', 7789),
+
         // SSL / TLS configuration for WSS (port 433)
         'ssl' => [
             'enabled' => (bool) env('AIFACE_WSS_ENABLED', false),
