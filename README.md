@@ -171,6 +171,220 @@ AiFace::device('LF00000001')->addUser(
 
 ---
 
+## 🚀 Realistic Real-World Workflow Example
+
+Below is a complete, production-grade example illustrating how to manage employee lifecycles (enrolling and offboarding users) via a Controller and automatically track attendance punches using Event Listeners.
+
+### 1. Employee Biometric Controller (Enrolling & Deleting Users)
+
+Create a controller (`app/Http/Controllers/BiometricEmployeeController.php`):
+
+```php
+namespace App\Http\Controllers;
+
+use AiFace\WebSocket\Facades\AiFace;
+use AiFace\WebSocket\Core\Protocol;
+use App\Models\User;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+
+class BiometricEmployeeController extends Controller
+{
+    protected string $deviceSn = 'LF00000001';
+
+    /**
+     * Step 1: Enroll an employee onto the biometric terminal
+     */
+    public function enroll(Request $request, int $userId): JsonResponse
+    {
+        $employee = User::findOrFail($userId);
+
+        // 1. Verify the biometric hardware terminal is connected online
+        if (!AiFace::isOnline($this->deviceSn)) {
+            return response()->json([
+                'success' => false,
+                'message' => "Terminal [{$this->deviceSn}] is currently offline.",
+            ], 503);
+        }
+
+        // 2. Check remaining device memory/capacity before adding
+        $cap = AiFace::device($this->deviceSn)->getDevCap();
+        if (($cap['useduser'] ?? 0) >= ($cap['usersize'] ?? 10000)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Terminal user capacity is full.',
+            ], 422);
+        }
+
+        // 3. Enroll employee with card and/or PIN password
+        // (backupnum: 10 = password, 11 = card, 50 = face photo)
+        $enrollResult = AiFace::device($this->deviceSn)->setUserInfo(
+            enrollId: $employee->id,
+            name: $employee->name,
+            backupNum: Protocol::BACKUP_PASSWORD,
+            record: $request->input('pin', '123456'), // User PIN
+            admin: $employee->is_admin ? 1 : 0,       // 1 = Terminal Administrator
+            enable: 1,                                // 1 = Active, 0 = Suspended
+            extra: [
+                'card' => $request->input('card_number', '99887766'),
+                'aliasid' => 'EMP-' . $employee->id,
+            ]
+        );
+
+        // 4. (Optional) Enroll face photo if uploaded
+        if ($request->hasFile('face_photo')) {
+            $base64Image = base64_encode(file_get_contents($request->file('face_photo')->getRealPath()));
+            AiFace::device($this->deviceSn)->setUserFacePhoto(
+                enrollId: $employee->id,
+                name: $employee->name,
+                base64Jpg: $base64Image
+            );
+        }
+
+        // 5. (Optional) Prompt the device screen to open enrollment wizard for fingerprint
+        if ($request->boolean('scan_fingerprint')) {
+            AiFace::device($this->deviceSn)->addUser(
+                enrollId: $employee->id,
+                backupNum: Protocol::BACKUP_FP_0 // Fingerprint slot 0
+            );
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => "Employee #{$employee->id} ({$employee->name}) enrolled successfully.",
+            'terminal_response' => $enrollResult,
+        ]);
+    }
+
+    /**
+     * Step 2: Offboard / Delete an employee from the biometric terminal
+     */
+    public function offboard(int $userId): JsonResponse
+    {
+        $employee = User::findOrFail($userId);
+
+        if (!AiFace::isOnline($this->deviceSn)) {
+            return response()->json([
+                'success' => false,
+                'message' => "Terminal [{$this->deviceSn}] is offline. Reconnect terminal to delete.",
+            ], 503);
+        }
+
+        // Delete user and all associated biometric credentials (face, fingerprints, card, PIN)
+        $deleteResult = AiFace::device($this->deviceSn)->deleteUser(
+            enrollId: $employee->id
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => "Employee #{$employee->id} deleted from terminal.",
+            'terminal_response' => $deleteResult,
+        ]);
+    }
+
+    /**
+     * Step 3: Revoke only a specific credential (e.g. lost RFID card) without deleting user
+     */
+    public function revokeCard(int $userId): JsonResponse
+    {
+        // Deleting with backupNum = 11 removes only the RFID card credential
+        $result = AiFace::device($this->deviceSn)->deleteUser(
+            enrollId: $userId,
+            backupNum: Protocol::BACKUP_CARD
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => "RFID card revoked for user #{$userId}.",
+            'terminal_response' => $result,
+        ]);
+    }
+}
+```
+
+---
+
+### 2. Real-Time Attendance Event Listener
+
+Create an event listener (`app/Listeners/HandleBiometricAttendance.php`) to automatically process punches when employees clock in or clock out:
+
+```php
+namespace App\Listeners;
+
+use AiFace\WebSocket\Events\UserClockedIn;
+use AiFace\WebSocket\Events\UserClockedOut;
+use App\Models\Timesheet;
+use Illuminate\Support\Facades\Log;
+
+class HandleBiometricAttendance
+{
+    /**
+     * Handle Clock-In (Check-In) Events
+     */
+    public function handleClockIn(UserClockedIn $event): void
+    {
+        Log::info("Employee #{$event->enrollId} ({$event->name}) clocked IN on terminal {$event->sn} at {$event->time} via {$event->modeDesc}");
+
+        // Record attendance in your database
+        Timesheet::create([
+            'user_id'         => $event->enrollId,
+            'employee_name'   => $event->name,
+            'device_sn'       => $event->sn,
+            'action'          => 'clock_in',
+            'punch_time'      => $event->time,
+            'verification'    => $event->modeDesc, // e.g. "Face Recognition", "Fingerprint", "Card", "Password"
+            'snapshot_base64' => $event->image,    // Captured snapshot if terminal camera is configured
+        ]);
+
+        // Trigger notifications, Slack alerts, or dispatch payroll sync jobs
+    }
+
+    /**
+     * Handle Clock-Out (Check-Out) Events
+     */
+    public function handleClockOut(UserClockedOut $event): void
+    {
+        Log::info("Employee #{$event->enrollId} ({$event->name}) clocked OUT on terminal {$event->sn} at {$event->time}");
+
+        Timesheet::create([
+            'user_id'         => $event->enrollId,
+            'employee_name'   => $event->name,
+            'device_sn'       => $event->sn,
+            'action'          => 'clock_out',
+            'punch_time'      => $event->time,
+            'verification'    => $event->modeDesc,
+        ]);
+    }
+}
+```
+
+---
+
+### 3. Registering the Listener in Laravel
+
+In your `app/Providers/AppServiceProvider.php` (Laravel 11 & 12) or `EventServiceProvider.php` (Laravel 9 & 10):
+
+```php
+namespace App\Providers;
+
+use AiFace\WebSocket\Events\UserClockedIn;
+use AiFace\WebSocket\Events\UserClockedOut;
+use App\Listeners\HandleBiometricAttendance;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\ServiceProvider;
+
+class AppServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        Event::listen(UserClockedIn::class, [HandleBiometricAttendance::class, 'handleClockIn']);
+        Event::listen(UserClockedOut::class, [HandleBiometricAttendance::class, 'handleClockOut']);
+    }
+}
+```
+
+---
+
 ## 🛠️ Complete Command Reference (All 80+ Commands)
 
 Every command defined in the TimyTeco AiFace specification is implemented with typed methods:
