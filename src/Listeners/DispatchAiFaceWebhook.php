@@ -13,6 +13,8 @@ use AiFace\WebSocket\Events\PinReceived;
 use AiFace\WebSocket\Events\QrCodeScanned;
 use AiFace\WebSocket\Events\UserClockedIn;
 use AiFace\WebSocket\Events\UserClockedOut;
+use AiFace\WebSocket\Events\UserDeleteScheduled;
+use AiFace\WebSocket\Events\UserDeleted;
 use AiFace\WebSocket\Events\UserPushed;
 use AiFace\WebSocket\Services\WebhookForwarder;
 use Illuminate\Events\Dispatcher;
@@ -194,6 +196,33 @@ class DispatchAiFaceWebhook
     }
 
     /**
+     * User deletion scheduled with a delay.
+     */
+    public function handleUserDeleteScheduled(UserDeleteScheduled $event): void
+    {
+        $this->webhooks->dispatch('user.delete_scheduled', [
+            'sn'            => $event->sn,
+            'enrollid'      => $event->enrollId,
+            'backupnum'     => $event->backupNum,
+            'delay_seconds' => $event->delaySeconds,
+            'execute_at'    => $event->executeAt,
+            'task_id'       => $event->taskId,
+        ]);
+    }
+
+    /**
+     * User deletion executed on device.
+     */
+    public function handleUserDeleted(UserDeleted $event): void
+    {
+        $this->webhooks->dispatch('user.deleted', [
+            'sn'        => $event->sn,
+            'enrollid'  => $event->enrollId,
+            'backupnum' => $event->backupNum,
+        ]);
+    }
+
+    /**
      * Register the listeners for the subscriber.
      */
     public function subscribe(Dispatcher $events): array
@@ -206,6 +235,8 @@ class DispatchAiFaceWebhook
             DeviceConnected::class         => 'handleDeviceConnected',
             DeviceDisconnected::class      => 'handleDeviceDisconnected',
             UserPushed::class              => 'handleUserPushed',
+            UserDeleteScheduled::class     => 'handleUserDeleteScheduled',
+            UserDeleted::class             => 'handleUserDeleted',
             PinReceived::class             => 'handlePinReceived',
             QrCodeScanned::class           => 'handleQrCodeScanned',
             GpsReceived::class             => 'handleGpsReceived',

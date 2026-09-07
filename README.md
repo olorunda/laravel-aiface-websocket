@@ -299,6 +299,44 @@ class BiometricEmployeeController extends Controller
             'terminal_response' => $result,
         ]);
     }
+
+    /**
+     * Step 4: Delayed / Scheduled Deletion (Auto-Expire Access)
+     * Useful for hotel guests, temporary visitors, contract workers, or scheduled offboarding.
+     */
+    public function scheduleOffboarding(int $userId): JsonResponse
+    {
+        // Option A: Pass delay in seconds (e.g., 3600 = 1 hour)
+        $result = AiFace::device($this->deviceSn)->deleteUser(
+            enrollId: $userId,
+            delay: 3600
+        );
+
+        // Option B: Pass a Carbon / DateTime instance
+        // $result = AiFace::device($this->deviceSn)->delayedDeleteUser(
+        //     enrollId: $userId,
+        //     delay: now()->addHours(8)
+        // );
+
+        return response()->json([
+            'success' => true,
+            'message' => "User #{$userId} scheduled for automatic removal when time elapses.",
+            'task'    => $result,
+        ]);
+    }
+
+    /**
+     * Step 5: Cancel a scheduled deletion before it elapses
+     */
+    public function cancelScheduledOffboarding(int $userId): JsonResponse
+    {
+        $result = AiFace::device($this->deviceSn)->cancelDelayedDelete($userId);
+
+        return response()->json([
+            'success' => true,
+            'result'  => $result,
+        ]);
+    }
 }
 ```
 
@@ -397,7 +435,10 @@ Every command defined in the TimyTeco AiFace specification is implemented with t
 | `setUserPassword($id, $name, $pwd)` | `setuserinfo` (10) | Quick enroll PIN/password |
 | `setUserCard($id, $name, $card)` | `setuserinfo` (11) | Quick enroll RFID card number |
 | `setUserFingerprint($id, $name, $slot, $hex)` | `setuserinfo` (0-9)| Quick enroll fingerprint with 0-compression |
-| `deleteUser($enrollId, $backupNum = null)` | `deleteuser` | Delete user or specific credential |
+| `deleteUser($enrollId, $backupNum = null, $delay = null)` | `deleteuser` | Delete user immediately or schedule delayed deletion (`int` seconds or `DateTime`) |
+| `delayedDeleteUser($enrollId, $delay, $backupNum = null)` | `delayeddelete` | Schedule user/credential deletion after delay elapses (offline resilient) |
+| `cancelDelayedDelete($enrollId)` | `canceldelayeddelete` | Cancel pending delayed deletion for user |
+| `getPendingDelayedDeletes()` | `getpendingdelayeddeletes` | Retrieve list of all scheduled delayed delete tasks |
 | `cleanUser()` | `cleanuser` | Clear all users from hardware |
 | `setUserName(array $users)` | `setusername` | Batch set user names |
 | `getUserName($enrollId)` | `getusername` | Query user name by ID |
@@ -514,7 +555,10 @@ Every command defined in the TimyTeco AiFace specification is implemented with t
 - `POST /api/aiface/devices/{sn}/command`: Send arbitrary JSON command to device.
 - `POST /api/aiface/devices/{sn}/opendoor`: Quick remote door unlock.
 - `POST /api/aiface/devices/{sn}/reboot`: Hardware reboot.
-- `POST /api/aiface/devices/{sn}/sync-time`: Synchronize device clock.
+- `POST /api/aiface/devices/{sn}/users`: Create / update user on terminal.
+- `DELETE /api/aiface/devices/{sn}/users/{enrollid}`: Delete user immediately or schedule delayed deletion (`?delay=3600`).
+- `GET /api/aiface/devices/{sn}/delayed-deletes`: List all scheduled delayed deletions for device.
+- `DELETE /api/aiface/devices/{sn}/delayed-deletes/{enrollid}`: Cancel a scheduled delayed deletion.
 - `GET /api/aiface/devices/{sn}/new-logs`: Fetch unread logs.
 - `GET /api/aiface/logs`: View stored attendance punches.
 - `GET /api/aiface/commands/catalog`: Complete command schema catalog.
@@ -531,6 +575,8 @@ You can attach listeners or subscribers in your own application:
 ```php
 use AiFace\WebSocket\Events\UserClockedIn;
 use AiFace\WebSocket\Events\UserClockedOut;
+use AiFace\WebSocket\Events\UserDeleteScheduled;
+use AiFace\WebSocket\Events\UserDeleted;
 use AiFace\WebSocket\Events\AttendanceLogReceived;
 use AiFace\WebSocket\Events\DeviceRegistered;
 use Illuminate\Support\Facades\Event;
@@ -544,6 +590,16 @@ Event::listen(UserClockedIn::class, function (UserClockedIn $event) {
 // Triggered whenever a user clocks out (inout = 1)
 Event::listen(UserClockedOut::class, function (UserClockedOut $event) {
     logger()->info("User #{$event->enrollId} ({$event->name}) clocked OUT on {$event->sn} at {$event->time}");
+});
+
+// Triggered when a delayed deletion task is scheduled
+Event::listen(UserDeleteScheduled::class, function (UserDeleteScheduled $event) {
+    logger()->info("User #{$event->enrollId} scheduled for deletion on {$event->sn} in {$event->delaySeconds}s (at " . date('Y-m-d H:i:s', $event->executeAt) . ")");
+});
+
+// Triggered when deletion is transmitted and effected on device
+Event::listen(UserDeleted::class, function (UserDeleted $event) {
+    logger()->info("User #{$event->enrollId} deleted on {$event->sn}");
 });
 
 // Triggered when a device registers or completes handshake
@@ -560,17 +616,19 @@ Configure external HTTP webhook endpoints in `config/aiface.php`:
     'url' => 'https://your-domain.com/webhooks/aiface',
     'secret' => 'your-secret-key',
     'events' => [
-        'attendance.clockin',   // Individual user clock-in punch
-        'attendance.clockout',  // Individual user clock-out punch
-        'attendance.logged',    // Batch attendance log payload
-        'device.registered',    // Device handshake completed
-        'device.connected',     // New socket connected
-        'device.disconnected',  // Device disconnected
-        'user.pushed',          // On-device user enrollment report
-        'pin.received',         // Door access PIN entered
-        'qrcode.scanned',       // Visitor/employee QR code scan
-        'gps.received',         // Device GPS location
-        'intercom.call',        // Video intercom doorbell ring
+        'attendance.clockin',       // Individual user clock-in punch
+        'attendance.clockout',      // Individual user clock-out punch
+        'attendance.logged',        // Batch attendance log payload
+        'device.registered',        // Device handshake completed
+        'device.connected',         // New socket connected
+        'device.disconnected',      // Device disconnected
+        'user.pushed',              // On-device user enrollment report
+        'user.delete_scheduled',    // User deletion task scheduled
+        'user.deleted',             // User deletion effected on device
+        'pin.received',             // Door access PIN entered
+        'qrcode.scanned',           // Visitor/employee QR code scan
+        'gps.received',             // Device GPS location
+        'intercom.call',            // Video intercom doorbell ring
     ],
 ],
 ```

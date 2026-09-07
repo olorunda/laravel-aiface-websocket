@@ -269,4 +269,126 @@ class StorageService
             // Silently ignore or debug
         }
     }
+
+    /**
+     * Persist a delayed / scheduled command.
+     */
+    public function saveScheduledCommand(array $task): void
+    {
+        if (!$this->enabled) {
+            return;
+        }
+
+        try {
+            $now = date('Y-m-d H:i:s');
+            $taskId = $task['id'] ?? $task['task_id'] ?? uniqid('task_del_');
+            $executeAt = isset($task['execute_at']) ? (is_numeric($task['execute_at']) ? (int) $task['execute_at'] : strtotime($task['execute_at'])) : time();
+
+            DB::table($this->table('scheduled_commands'))->insert([
+                'task_id'       => $taskId,
+                'sn'            => $task['sn'],
+                'cmd'           => $task['cmd'],
+                'enrollid'      => isset($task['enrollid']) ? (string) $task['enrollid'] : null,
+                'backupnum'     => isset($task['backupnum']) && $task['backupnum'] !== '' && $task['backupnum'] !== null ? (int) $task['backupnum'] : null,
+                'delay_seconds' => (int) ($task['delay_seconds'] ?? 0),
+                'execute_at'    => date('Y-m-d H:i:s', $executeAt),
+                'status'        => 'pending',
+                'payload'       => json_encode($task),
+                'created_at'    => $now,
+                'updated_at'    => $now,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('StorageService::saveScheduledCommand failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Mark a scheduled command as executed.
+     */
+    public function markScheduledCommandExecuted(string $taskId, array $response = []): void
+    {
+        if (!$this->enabled) {
+            return;
+        }
+
+        try {
+            DB::table($this->table('scheduled_commands'))
+                ->where('task_id', $taskId)
+                ->update([
+                    'status'     => 'executed',
+                    'response'   => json_encode($response),
+                    'updated_at' => date('Y-m-d H:i:s'),
+                ]);
+        } catch (\Throwable $e) {
+            Log::warning('StorageService::markScheduledCommandExecuted failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Cancel a pending scheduled command by taskId or by SN and enrollId.
+     */
+    public function cancelScheduledCommand(string $taskIdOrSn, ?string $enrollId = null): int
+    {
+        if (!$this->enabled) {
+            return 0;
+        }
+
+        try {
+            $query = DB::table($this->table('scheduled_commands'))
+                ->where('status', 'pending');
+
+            if ($enrollId !== null) {
+                $query->where('sn', $taskIdOrSn)->where('enrollid', (string) $enrollId);
+            } else {
+                $query->where('task_id', $taskIdOrSn);
+            }
+
+            return (int) $query->update([
+                'status'     => 'cancelled',
+                'updated_at' => date('Y-m-d H:i:s'),
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('StorageService::cancelScheduledCommand failed: ' . $e->getMessage());
+            return 0;
+        }
+    }
+
+    /**
+     * Retrieve all pending scheduled commands from database (e.g. upon daemon startup).
+     *
+     * @return array<string, array>
+     */
+    public function getPendingScheduledCommands(?string $sn = null): array
+    {
+        if (!$this->enabled) {
+            return [];
+        }
+
+        try {
+            $query = DB::table($this->table('scheduled_commands'))
+                ->where('status', 'pending');
+
+            if ($sn) {
+                $query->where('sn', $sn);
+            }
+
+            $rows = $query->get();
+            $tasks = [];
+            foreach ($rows as $r) {
+                $tasks[$r->task_id] = [
+                    'id'            => $r->task_id,
+                    'sn'            => $r->sn,
+                    'cmd'           => $r->cmd,
+                    'enrollid'      => $r->enrollid,
+                    'backupnum'     => $r->backupnum,
+                    'delay_seconds' => (int) $r->delay_seconds,
+                    'execute_at'    => strtotime($r->execute_at),
+                    'created_at'    => strtotime($r->created_at),
+                ];
+            }
+            return $tasks;
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
 }

@@ -155,11 +155,73 @@ class AiFaceDeviceClient
         return $this->setUserInfo($enrollId, $name, $slot, $compressedFpHex, $admin);
     }
 
-    public function deleteUser(int|string $enrollId, ?int $backupNum = null): array
-    {
+    public function deleteUser(
+        int|string $enrollId,
+        ?int $backupNum = null,
+        int|\DateTimeInterface|null $delay = null
+    ): array {
+        if ($delay !== null) {
+            return $this->delayedDeleteUser($enrollId, $delay, $backupNum);
+        }
+
         $data = AiFaceCommandBuilder::deleteUser($enrollId, $backupNum);
         $cmd = array_shift($data);
         return $this->send($cmd, $data);
+    }
+
+    /**
+     * Schedule a delayed user deletion on the device.
+     * The delete command will be effected on the hardware terminal only after $delay has elapsed.
+     *
+     * @param int|string $enrollId User ID to delete
+     * @param int|\DateTimeInterface $delay Delay in seconds or target execution DateTime
+     * @param int|null $backupNum Optional credential type (null = delete entire user)
+     */
+    public function delayedDeleteUser(
+        int|string $enrollId,
+        int|\DateTimeInterface $delay,
+        ?int $backupNum = null
+    ): array {
+        $now = time();
+        if ($delay instanceof \DateTimeInterface) {
+            $executeAt = $delay->getTimestamp();
+            $delaySeconds = max(0, $executeAt - $now);
+        } else {
+            $delaySeconds = max(0, (int) $delay);
+            $executeAt = $now + $delaySeconds;
+        }
+
+        // If delay is 0 or negative, delete immediately
+        if ($delaySeconds <= 0) {
+            $data = AiFaceCommandBuilder::deleteUser($enrollId, $backupNum);
+            $cmd = array_shift($data);
+            return $this->send($cmd, $data);
+        }
+
+        return $this->send('delayeddelete', [
+            'enrollid'      => $enrollId,
+            'backupnum'     => $backupNum,
+            'delay'         => $delaySeconds,
+            'execute_at'    => $executeAt,
+        ]);
+    }
+
+    /**
+     * Cancel a pending delayed deletion for a user on this device.
+     */
+    public function cancelDelayedDelete(int|string $enrollId): array
+    {
+        return $this->send('canceldelayeddelete', [
+            'enrollid' => $enrollId,
+        ]);
+    }
+
+    /**
+     * Get all pending delayed deletions scheduled for this device.
+     */
+    public function getPendingDelayedDeletes(): array
+    {
+        return $this->send('getpendingdelayeddeletes');
     }
 
     public function cleanUser(): array

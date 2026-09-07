@@ -2,6 +2,7 @@
 
 namespace AiFace\WebSocket\Core;
 
+use AiFace\WebSocket\Commands\AiFaceCommandBuilder;
 use AiFace\WebSocket\Events\AttendanceLogReceived;
 use AiFace\WebSocket\Events\CommandResponseReceived;
 use AiFace\WebSocket\Events\DeviceConnected;
@@ -13,6 +14,8 @@ use AiFace\WebSocket\Events\PinReceived;
 use AiFace\WebSocket\Events\QrCodeScanned;
 use AiFace\WebSocket\Events\UserClockedIn;
 use AiFace\WebSocket\Events\UserClockedOut;
+use AiFace\WebSocket\Events\UserDeleteScheduled;
+use AiFace\WebSocket\Events\UserDeleted;
 use AiFace\WebSocket\Events\UserPushed;
 use AiFace\WebSocket\Services\StorageService;
 use AiFace\WebSocket\Services\WebhookForwarder;
@@ -39,6 +42,7 @@ class WebSocketServer
     protected StorageService $storage;
     protected WebhookForwarder $webhooks;
     protected bool $running = false;
+    protected array $scheduledTasks = [];
 
     public function __construct(
         array $config,
@@ -56,6 +60,7 @@ class WebSocketServer
         $this->ipcHost = (string) ($config['server']['ipc_host'] ?? '127.0.0.1');
         $this->ipcPort = (int) ($config['server']['ipc_port'] ?? ($this->port + 1));
         $this->ipcPath = '/tmp/aiface_ipc_' . $this->port . '.sock';
+        $this->scheduledTasks = $this->storage->getPendingScheduledCommands();
     }
 
     public function getRegistry(): ConnectionRegistry
@@ -154,11 +159,12 @@ class WebSocketServer
         while ($this->running) {
             $this->tick();
 
-            // Periodic heartbeat & timeout checks
+            // Periodic heartbeat, timeout & scheduled command checks
             $now = microtime(true);
             if ($now - $lastPingCheck >= 1.0) {
                 $lastPingCheck = $now;
                 $this->checkHeartbeats($pingInterval, $timeout);
+                $this->processScheduledTasks();
             }
 
             if ($onTick) {
@@ -469,6 +475,9 @@ class WebSocketServer
         $this->fireEvent(new DeviceRegistered($sn, $devinfo, $conn->getRemoteIp()));
 
         $this->log("info", sprintf('Device [%s] successfully registered (model: %s, firmware: %s)', $sn, $devinfo['modelname'] ?? 'AiFace', $devinfo['firmware'] ?? 'N/A'));
+
+        // Check and execute any pending scheduled tasks waiting for this reconnected device
+        $this->processScheduledTasks();
     }
 
     /**
@@ -720,6 +729,86 @@ class WebSocketServer
                 return;
             }
 
+            // Intercept delayed deletion command
+            if ($cmd === 'delayeddelete') {
+                $enrollId = $payload['enrollid'] ?? null;
+                $backupNum = isset($payload['backupnum']) && $payload['backupnum'] !== '' ? (int)$payload['backupnum'] : null;
+                $delaySeconds = (int) ($payload['delay'] ?? 0);
+                $executeAt = (int) ($payload['execute_at'] ?? (time() + $delaySeconds));
+
+                $taskId = uniqid('del_', true);
+                $task = [
+                    'id'            => $taskId,
+                    'sn'            => $sn,
+                    'cmd'           => 'deleteuser',
+                    'enrollid'      => $enrollId,
+                    'backupnum'     => $backupNum,
+                    'delay_seconds' => $delaySeconds,
+                    'execute_at'    => $executeAt,
+                    'created_at'    => time(),
+                ];
+
+                $this->scheduledTasks[$taskId] = $task;
+                $this->storage->saveScheduledCommand($task);
+
+                $this->fireEvent(new UserDeleteScheduled(
+                    $sn,
+                    $enrollId,
+                    $backupNum,
+                    $delaySeconds,
+                    date('Y-m-d H:i:s', $executeAt),
+                    $taskId
+                ));
+
+                $this->log("info", sprintf('Scheduled delayed user deletion for device [%s] user [%s] at %s (in %ds)', $sn, $enrollId, date('Y-m-d H:i:s', $executeAt), $delaySeconds));
+
+                @fwrite($ipcClient, json_encode([
+                    'result'        => true,
+                    'scheduled'     => true,
+                    'task_id'       => $taskId,
+                    'sn'            => $sn,
+                    'enrollid'      => $enrollId,
+                    'backupnum'     => $backupNum,
+                    'delay_seconds' => $delaySeconds,
+                    'execute_at'    => date('Y-m-d H:i:s', $executeAt),
+                    'message'       => "Delete command scheduled to execute at " . date('Y-m-d H:i:s', $executeAt),
+                ]));
+                @fclose($ipcClient);
+                return;
+            }
+
+            // Intercept cancel delayed deletion
+            if ($cmd === 'canceldelayeddelete') {
+                $enrollId = $payload['enrollid'] ?? null;
+                $cancelledCount = 0;
+                foreach ($this->scheduledTasks as $id => $task) {
+                    if ($task['sn'] === $sn && (string)$task['enrollid'] === (string)$enrollId) {
+                        unset($this->scheduledTasks[$id]);
+                        $this->storage->cancelScheduledCommand($id);
+                        $cancelledCount++;
+                    }
+                }
+                @fwrite($ipcClient, json_encode([
+                    'result'    => true,
+                    'cancelled' => $cancelledCount > 0,
+                    'count'     => $cancelledCount,
+                ]));
+                @fclose($ipcClient);
+                return;
+            }
+
+            // Intercept get pending delayed deletions
+            if ($cmd === 'getpendingdelayeddeletes') {
+                $tasks = array_values(array_filter($this->scheduledTasks, fn($t) => $t['sn'] === $sn));
+                @fwrite($ipcClient, json_encode([
+                    'result' => true,
+                    'count'  => count($tasks),
+                    'data'   => $tasks,
+                ]));
+                @fclose($ipcClient);
+                return;
+            }
+
             $conn = $this->registry->getBySn($sn);
             if (!$conn) {
                 @fwrite($ipcClient, json_encode(['result' => false, 'error' => "Device [{$sn}] is offline or not registered"]));
@@ -945,12 +1034,60 @@ class WebSocketServer
                     'session_id' => $event->sessionId,
                     'data'       => $event->data,
                 ]);
+            } elseif ($event instanceof UserDeleteScheduled) {
+                $this->webhooks->dispatch('user.delete_scheduled', [
+                    'sn'            => $event->sn,
+                    'enrollid'      => $event->enrollId,
+                    'backupnum'     => $event->backupNum,
+                    'delay_seconds' => $event->delaySeconds,
+                    'execute_at'    => $event->executeAt,
+                    'task_id'       => $event->taskId,
+                ]);
+            } elseif ($event instanceof UserDeleted) {
+                $this->webhooks->dispatch('user.deleted', [
+                    'sn'        => $event->sn,
+                    'enrollid'  => $event->enrollId,
+                    'backupnum' => $event->backupNum,
+                ]);
             } elseif ($event instanceof CommandResponseReceived) {
                 $this->webhooks->dispatch('command.response', [
                     'sn'       => $event->sn,
                     'command'  => $event->command,
                     'response' => $event->response,
                 ]);
+            }
+        }
+    }
+
+    /**
+     * Check and execute due scheduled commands (e.g. delayed user deletion).
+     */
+    public function processScheduledTasks(): void
+    {
+        if (empty($this->scheduledTasks)) {
+            return;
+        }
+
+        $now = time();
+        foreach ($this->scheduledTasks as $id => $task) {
+            if ($now >= $task['execute_at']) {
+                $sn = $task['sn'];
+                $enrollId = $task['enrollid'];
+                $backupNum = $task['backupnum'];
+
+                $conn = $this->registry->getBySn($sn);
+                if ($conn) {
+                    $payload = AiFaceCommandBuilder::deleteUser($enrollId, $backupNum);
+                    $conn->sendJson($payload);
+
+                    $this->storage->markScheduledCommandExecuted($id, ['executed_at' => date('Y-m-d H:i:s')]);
+                    $this->fireEvent(new UserDeleted($sn, $enrollId, $backupNum));
+
+                    $this->log("info", sprintf('Effected scheduled user deletion on device [%s] for user [%s]', $sn, $enrollId));
+                    unset($this->scheduledTasks[$id]);
+                } else {
+                    $this->log("warning", sprintf('Scheduled deletion for user [%s] on device [%s] is due, but device is offline. Will execute upon reconnect.', $enrollId, $sn));
+                }
             }
         }
     }

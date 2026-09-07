@@ -174,11 +174,36 @@ class AiFaceApiController extends Controller
     }
 
     /**
-     * Delete user from device.
+     * Delete user from device (supports immediate or delayed deletion).
      */
-    public function deleteUser(string $sn, string $enrollId): JsonResponse
+    public function deleteUser(Request $request, string $sn, string $enrollId): JsonResponse
     {
-        $response = AiFace::device($sn)->deleteUser($enrollId);
+        $backupNum = $request->has('backupnum') ? (int) $request->input('backupnum') : null;
+        $delay = $request->input('delay');
+
+        if ($delay !== null && is_numeric($delay)) {
+            $delay = (int) $delay;
+        }
+
+        $response = AiFace::device($sn)->deleteUser($enrollId, $backupNum, $delay);
+        return response()->json($response);
+    }
+
+    /**
+     * Get list of pending scheduled delayed delete commands for a device.
+     */
+    public function getPendingDelayedDeletes(string $sn): JsonResponse
+    {
+        $response = AiFace::device($sn)->getPendingDelayedDeletes();
+        return response()->json($response);
+    }
+
+    /**
+     * Cancel a pending delayed delete command for an enrollment ID on a device.
+     */
+    public function cancelDelayedDelete(string $sn, string $enrollId): JsonResponse
+    {
+        $response = AiFace::device($sn)->cancelDelayedDelete($enrollId);
         return response()->json($response);
     }
 
