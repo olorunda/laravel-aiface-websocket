@@ -9,6 +9,7 @@ use AiFace\WebSocket\Core\WebSocketServer;
 use AiFace\WebSocket\Http\Controllers\AiFaceApiController;
 use AiFace\WebSocket\Http\Controllers\AiFaceDashboardController;
 use AiFace\WebSocket\Http\Middleware\AiFaceApiAuthMiddleware;
+use AiFace\WebSocket\Listeners\DispatchAiFaceWebhook;
 use AiFace\WebSocket\Services\AiFaceManager;
 use AiFace\WebSocket\Services\StorageService;
 use AiFace\WebSocket\Services\WebhookForwarder;
@@ -33,6 +34,10 @@ class AiFaceServiceProvider extends ServiceProvider
             return new WebhookForwarder($app['config']->get('aiface', []));
         });
 
+        $this->app->singleton(DispatchAiFaceWebhook::class, function ($app) {
+            return new DispatchAiFaceWebhook($app->make(WebhookForwarder::class));
+        });
+
         $this->app->singleton('aiface.manager', function ($app) {
             return new AiFaceManager($app['config']->get('aiface', []));
         });
@@ -53,6 +58,10 @@ class AiFaceServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        if (isset($this->app['events'])) {
+            $this->app['events']->subscribe(DispatchAiFaceWebhook::class);
+        }
+
         if ($this->app->runningInConsole()) {
             $this->publishes([
                 __DIR__ . '/../config/aiface.php' => config_path('aiface.php'),

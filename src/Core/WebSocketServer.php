@@ -2,16 +2,18 @@
 
 namespace AiFace\WebSocket\Core;
 
+use AiFace\WebSocket\Events\AttendanceLogReceived;
+use AiFace\WebSocket\Events\CommandResponseReceived;
 use AiFace\WebSocket\Events\DeviceConnected;
 use AiFace\WebSocket\Events\DeviceDisconnected;
 use AiFace\WebSocket\Events\DeviceRegistered;
-use AiFace\WebSocket\Events\AttendanceLogReceived;
-use AiFace\WebSocket\Events\UserPushed;
-use AiFace\WebSocket\Events\PinReceived;
-use AiFace\WebSocket\Events\QrCodeScanned;
 use AiFace\WebSocket\Events\GpsReceived;
 use AiFace\WebSocket\Events\IntercomCallReceived;
-use AiFace\WebSocket\Events\CommandResponseReceived;
+use AiFace\WebSocket\Events\PinReceived;
+use AiFace\WebSocket\Events\QrCodeScanned;
+use AiFace\WebSocket\Events\UserClockedIn;
+use AiFace\WebSocket\Events\UserClockedOut;
+use AiFace\WebSocket\Events\UserPushed;
 use AiFace\WebSocket\Services\StorageService;
 use AiFace\WebSocket\Services\WebhookForwarder;
 use Illuminate\Support\Facades\Event;
@@ -302,12 +304,6 @@ class WebSocketServer
         $conn->setHandshakeDone(true);
 
         $this->fireEvent(new DeviceConnected($conn->getId(), $conn->getRemoteIp(), $conn->getRemotePort()));
-        $this->webhooks->dispatch('device.connected', [
-            'connection_id' => $conn->getId(),
-            'ip' => $conn->getRemoteIp(),
-            'port' => $conn->getRemotePort(),
-            'timestamp' => date('Y-m-d H:i:s'),
-        ]);
 
         $this->log("info", sprintf('WebSocket handshake established with %s:%d', $conn->getRemoteIp(), $conn->getRemotePort()));
     }
@@ -471,13 +467,6 @@ class WebSocketServer
         $this->storage->saveDevice($sn, $conn->getRemoteIp(), $conn->getRemotePort(), $devinfo);
 
         $this->fireEvent(new DeviceRegistered($sn, $devinfo, $conn->getRemoteIp()));
-        $this->webhooks->dispatch('device.registered', [
-            'sn' => $sn,
-            'ip' => $conn->getRemoteIp(),
-            'port' => $conn->getRemotePort(),
-            'devinfo' => $devinfo,
-            'registered_at' => $cloudTime,
-        ]);
 
         $this->log("info", sprintf('Device [%s] successfully registered (model: %s, firmware: %s)', $sn, $devinfo['modelname'] ?? 'AiFace', $devinfo['firmware'] ?? 'N/A'));
     }
@@ -519,13 +508,17 @@ class WebSocketServer
 
         $conn->sendJson($response);
 
+        // Fire individual clock-in and clock-out events for each punch
+        foreach ($records as $rec) {
+            $inout = (int) ($rec['inout'] ?? 0);
+            if ($inout === 1) {
+                $this->fireEvent(new UserClockedOut($sn, $rec));
+            } else {
+                $this->fireEvent(new UserClockedIn($sn, $rec));
+            }
+        }
+
         $this->fireEvent(new AttendanceLogReceived($sn, $records, $count));
-        $this->webhooks->dispatch('attendance.logged', [
-            'sn' => $sn,
-            'count' => $count,
-            'records' => $records,
-            'received_at' => date('Y-m-d H:i:s'),
-        ]);
 
         $this->log("info", sprintf('Device [%s] reported %d attendance logs (saved: %d)', $sn, $count, $savedCount));
     }
@@ -552,12 +545,6 @@ class WebSocketServer
         $conn->sendJson($response);
 
         $this->fireEvent(new UserPushed($sn, $data));
-        $this->webhooks->dispatch('user.pushed', [
-            'sn' => $sn,
-            'enrollid' => $enrollId,
-            'backupnum' => $backupNum,
-            'user_data' => $data,
-        ]);
 
         $this->log("info", sprintf('Device [%s] pushed user enrollment for enrollid [%s], backupnum [%d] (%s)', $sn, $enrollId, $backupNum, Protocol::getBackupNumDescription($backupNum)));
     }
@@ -587,11 +574,6 @@ class WebSocketServer
         $conn->sendJson($response);
 
         $this->fireEvent(new PinReceived($sn, $pin, $time));
-        $this->webhooks->dispatch('pin.received', [
-            'sn' => $sn,
-            'pin' => $pin,
-            'time' => $time,
-        ]);
     }
 
     /**
@@ -618,10 +600,6 @@ class WebSocketServer
         $conn->sendJson($response);
 
         $this->fireEvent(new QrCodeScanned($sn, $qrRecord));
-        $this->webhooks->dispatch('qrcode.scanned', [
-            'sn' => $sn,
-            'qr_record' => $qrRecord,
-        ]);
     }
 
     /**
@@ -637,12 +615,6 @@ class WebSocketServer
         $this->storage->saveGpsLocation($sn, $satellites, $location, $timeStamp);
 
         $this->fireEvent(new GpsReceived($sn, $satellites, $location, $timeStamp));
-        $this->webhooks->dispatch('gps.received', [
-            'sn' => $sn,
-            'satellites' => $satellites,
-            'location' => $location,
-            'timestamp' => $timeStamp,
-        ]);
         // Note: As specified in official documentation, server does not send a response to sendgps.
     }
 
@@ -831,12 +803,6 @@ class WebSocketServer
         }
 
         $this->fireEvent(new DeviceDisconnected($sn, $id, $reason));
-        $this->webhooks->dispatch('device.disconnected', [
-            'sn' => $sn,
-            'connection_id' => $id,
-            'reason' => $reason,
-            'disconnected_at' => date('Y-m-d H:i:s'),
-        ]);
 
         $this->log("info", sprintf('Disconnected connection [%s] (sn: %s). Reason: %s', $id, $sn ?? 'unknown', $reason));
     }
@@ -883,9 +849,109 @@ class WebSocketServer
         try {
             if (class_exists(\Illuminate\Support\Facades\Event::class) && \Illuminate\Support\Facades\Facade::getFacadeApplication()) {
                 \Illuminate\Support\Facades\Event::dispatch($event);
+                return;
             }
         } catch (\Throwable) {
             // Silently continue outside Laravel
+        }
+
+        // Standalone fallback: forward via WebhookForwarder directly if outside Laravel
+        if (isset($this->webhooks)) {
+            if ($event instanceof UserClockedIn) {
+                $this->webhooks->dispatch('attendance.clockin', [
+                    'sn'        => $event->sn,
+                    'enrollid'  => $event->enrollId,
+                    'name'      => $event->name,
+                    'time'      => $event->time,
+                    'action'    => 'clock_in',
+                    'inout'     => $event->inout,
+                    'mode'      => $event->mode,
+                    'mode_desc' => $event->modeDesc,
+                    'aliasid'   => $event->aliasId,
+                    'image'     => $event->image,
+                    'record'    => $event->record,
+                ]);
+            } elseif ($event instanceof UserClockedOut) {
+                $this->webhooks->dispatch('attendance.clockout', [
+                    'sn'        => $event->sn,
+                    'enrollid'  => $event->enrollId,
+                    'name'      => $event->name,
+                    'time'      => $event->time,
+                    'action'    => 'clock_out',
+                    'inout'     => $event->inout,
+                    'mode'      => $event->mode,
+                    'mode_desc' => $event->modeDesc,
+                    'aliasid'   => $event->aliasId,
+                    'image'     => $event->image,
+                    'record'    => $event->record,
+                ]);
+            } elseif ($event instanceof AttendanceLogReceived) {
+                $this->webhooks->dispatch('attendance.logged', [
+                    'sn'          => $event->sn,
+                    'count'       => $event->count,
+                    'records'     => $event->records,
+                    'clock_ins'   => $event->getClockIns(),
+                    'clock_outs'  => $event->getClockOuts(),
+                    'received_at' => date('Y-m-d H:i:s'),
+                ]);
+            } elseif ($event instanceof DeviceRegistered) {
+                $this->webhooks->dispatch('device.registered', [
+                    'sn'            => $event->sn,
+                    'ip'            => $event->ip,
+                    'devinfo'       => $event->devinfo,
+                    'registered_at' => date('Y-m-d H:i:s'),
+                ]);
+            } elseif ($event instanceof DeviceConnected) {
+                $this->webhooks->dispatch('device.connected', [
+                    'connection_id' => $event->connectionId,
+                    'ip'            => $event->ip,
+                    'port'          => $event->port,
+                    'connected_at'  => date('Y-m-d H:i:s'),
+                ]);
+            } elseif ($event instanceof DeviceDisconnected) {
+                $this->webhooks->dispatch('device.disconnected', [
+                    'sn'              => $event->sn,
+                    'connection_id'   => $event->connectionId,
+                    'reason'          => $event->reason,
+                    'disconnected_at' => date('Y-m-d H:i:s'),
+                ]);
+            } elseif ($event instanceof UserPushed) {
+                $this->webhooks->dispatch('user.pushed', [
+                    'sn'        => $event->sn,
+                    'user_data' => $event->userData,
+                    'pushed_at' => date('Y-m-d H:i:s'),
+                ]);
+            } elseif ($event instanceof PinReceived) {
+                $this->webhooks->dispatch('pin.received', [
+                    'sn'   => $event->sn,
+                    'pin'  => $event->pin,
+                    'time' => $event->time,
+                ]);
+            } elseif ($event instanceof QrCodeScanned) {
+                $this->webhooks->dispatch('qrcode.scanned', [
+                    'sn'        => $event->sn,
+                    'qr_record' => $event->qrRecord,
+                ]);
+            } elseif ($event instanceof GpsReceived) {
+                $this->webhooks->dispatch('gps.received', [
+                    'sn'         => $event->sn,
+                    'location'   => $event->location,
+                    'satellites' => $event->satellites,
+                    'timestamp'  => $event->timeStamp,
+                ]);
+            } elseif ($event instanceof IntercomCallReceived) {
+                $this->webhooks->dispatch('intercom.call', [
+                    'sn'         => $event->sn,
+                    'session_id' => $event->sessionId,
+                    'data'       => $event->data,
+                ]);
+            } elseif ($event instanceof CommandResponseReceived) {
+                $this->webhooks->dispatch('command.response', [
+                    'sn'       => $event->sn,
+                    'command'  => $event->command,
+                    'response' => $event->response,
+                ]);
+            }
         }
     }
 }

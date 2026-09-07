@@ -307,21 +307,85 @@ Every command defined in the TimyTeco AiFace specification is implemented with t
 
 Import `postman_collection.json` into Postman for ready-to-use requests.
 
-### Webhook Event Forwarding
-Configure `config/aiface.php`:
+### Webhook & Laravel Event Listeners
+
+The package routes all hardware events through Laravel's standard Event Dispatcher and a dedicated event listener (`DispatchAiFaceWebhook`):
+
+#### 1. Listening to Clock-In & Biometric Events in Laravel
+You can attach listeners or subscribers in your own application:
+
+```php
+use AiFace\WebSocket\Events\UserClockedIn;
+use AiFace\WebSocket\Events\UserClockedOut;
+use AiFace\WebSocket\Events\AttendanceLogReceived;
+use AiFace\WebSocket\Events\DeviceRegistered;
+use Illuminate\Support\Facades\Event;
+
+// Triggered whenever a user clocks in (inout = 0)
+Event::listen(UserClockedIn::class, function (UserClockedIn $event) {
+    logger()->info("User #{$event->enrollId} ({$event->name}) clocked IN on {$event->sn} at {$event->time} via {$event->modeDesc}");
+    // Example: send SMS, notify Slack, update attendance timesheet
+});
+
+// Triggered whenever a user clocks out (inout = 1)
+Event::listen(UserClockedOut::class, function (UserClockedOut $event) {
+    logger()->info("User #{$event->enrollId} ({$event->name}) clocked OUT on {$event->sn} at {$event->time}");
+});
+
+// Triggered when a device registers or completes handshake
+Event::listen(DeviceRegistered::class, function (DeviceRegistered $event) {
+    logger()->info("AiFace device {$event->sn} registered from IP: {$event->ip}");
+});
+```
+
+#### 2. External Webhook Event Forwarding
+Configure external HTTP webhook endpoints in `config/aiface.php`:
 ```php
 'webhooks' => [
     'enabled' => true,
     'url' => 'https://your-domain.com/webhooks/aiface',
     'secret' => 'your-secret-key',
+    'events' => [
+        'attendance.clockin',   // Individual user clock-in punch
+        'attendance.clockout',  // Individual user clock-out punch
+        'attendance.logged',    // Batch attendance log payload
+        'device.registered',    // Device handshake completed
+        'device.connected',     // New socket connected
+        'device.disconnected',  // Device disconnected
+        'user.pushed',          // On-device user enrollment report
+        'pin.received',         // Door access PIN entered
+        'qrcode.scanned',       // Visitor/employee QR code scan
+        'gps.received',         // Device GPS location
+        'intercom.call',        // Video intercom doorbell ring
+    ],
 ],
 ```
 
-Incoming webhook requests include HMAC SHA-256 signatures:
-```text
-X-AiFace-Event: attendance.logged
+Incoming webhook requests include HMAC SHA-256 signatures for tamper verification:
+```http
+POST /webhooks/aiface HTTP/1.1
+Host: your-domain.com
+Content-Type: application/json
+X-AiFace-Event: attendance.clockin
 X-AiFace-Timestamp: 1773057600
-X-AiFace-Signature: sha256=abcdef123456...
+X-AiFace-Signature: sha256=abcdef1234567890abcdef1234567890...
+
+{
+  "event": "attendance.clockin",
+  "timestamp": 1773057600,
+  "data": {
+    "sn": "LF00000001",
+    "enrollid": 101,
+    "name": "Alice Johnson",
+    "time": "2026-09-07 08:30:00",
+    "action": "clock_in",
+    "inout": 0,
+    "mode": 3,
+    "mode_desc": "Face Recognition",
+    "aliasid": "EMP101",
+    "image": null
+  }
+}
 ```
 
 ---

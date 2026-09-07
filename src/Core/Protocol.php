@@ -168,6 +168,11 @@ class Protocol
         };
     }
 
+    public static function getLogModeDesc(int $mode): string
+    {
+        return self::getLogModeDescription($mode);
+    }
+
     /**
      * Get description for error reason code.
      */

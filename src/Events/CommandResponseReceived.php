@@ -9,9 +9,13 @@ class CommandResponseReceived
 {
     use Dispatchable, SerializesModels;
 
+    public string $command;
+
     public function __construct(
         public string $sn,
         public string $cmd,
         public array $response
-    ) {}
+    ) {
+        $this->command = $cmd;
+    }
 }
