@@ -1,0 +1,6 @@
+/vendor/
+.phpunit.result.cache
+.phpunit.cache
+.env
+.DS_Store
+*.sock

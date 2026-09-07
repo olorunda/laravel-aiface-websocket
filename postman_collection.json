@@ -1,0 +1,181 @@
+{
+  "info": {
+    "name": "AiFace WebSocket REST API",
+    "description": "REST API for managing TimyTeco AiFace biometric terminals and issuing all 80+ interaction commands over WebSocket",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Devices",
+      "item": [
+        {
+          "name": "List All Devices (Online & Offline)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/aiface/devices",
+              "host": ["{{base_url}}"],
+              "path": ["api", "aiface", "devices"]
+            }
+          }
+        },
+        {
+          "name": "Get Device Details",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/aiface/devices/LF00000001",
+              "host": ["{{base_url}}"],
+              "path": ["api", "aiface", "devices", "LF00000001"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Quick Actions",
+      "item": [
+        {
+          "name": "Remote Open Door",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"doornum\": 1\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/aiface/devices/LF00000001/opendoor",
+              "host": ["{{base_url}}"],
+              "path": ["api", "aiface", "devices", "LF00000001", "opendoor"]
+            }
+          }
+        },
+        {
+          "name": "Reboot Device",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/aiface/devices/LF00000001/reboot",
+              "host": ["{{base_url}}"],
+              "path": ["api", "aiface", "devices", "LF00000001", "reboot"]
+            }
+          }
+        },
+        {
+          "name": "Synchronize Device Time",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/aiface/devices/LF00000001/sync-time",
+              "host": ["{{base_url}}"],
+              "path": ["api", "aiface", "devices", "LF00000001", "sync-time"]
+            }
+          }
+        },
+        {
+          "name": "Pull New Logs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/aiface/devices/LF00000001/new-logs",
+              "host": ["{{base_url}}"],
+              "path": ["api", "aiface", "devices", "LF00000001", "new-logs"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Generic Command Dispatcher",
+      "item": [
+        {
+          "name": "Execute Any Command (e.g. getdevcap)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cmd\": \"getdevcap\",\n  \"params\": {},\n  \"timeout\": 10\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/aiface/devices/LF00000001/command",
+              "host": ["{{base_url}}"],
+              "path": ["api", "aiface", "devices", "LF00000001", "command"]
+            }
+          }
+        },
+        {
+          "name": "Execute Set User Info",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cmd\": \"setuserinfo\",\n  \"params\": {\n    \"enrollid\": 101,\n    \"name\": \"John Doe\",\n    \"backupnum\": 10,\n    \"record\": 123456,\n    \"admin\": 0,\n    \"enable\": 1\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/aiface/devices/LF00000001/command",
+              "host": ["{{base_url}}"],
+              "path": ["api", "aiface", "devices", "LF00000001", "command"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Attendance Logs",
+      "item": [
+        {
+          "name": "List Captured Attendance Logs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/aiface/logs?per_page=20",
+              "host": ["{{base_url}}"],
+              "path": ["api", "aiface", "logs"],
+              "query": [
+                { "key": "per_page", "value": "20" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Command Catalog",
+      "item": [
+        {
+          "name": "Get All 80+ Commands Catalog",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/aiface/commands/catalog",
+              "host": ["{{base_url}}"],
+              "path": ["api", "aiface", "commands", "catalog"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:8000"
+    }
+  ]
+}
