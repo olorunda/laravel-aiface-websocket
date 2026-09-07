@@ -26,9 +26,14 @@ class TimyTecoDatabase
             @mkdir($dir, 0777, true);
         }
 
-        $this->pdo = new PDO("sqlite:{$dbPath}");
-        $this->pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        $this->pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+        $this->pdo = new PDO("sqlite:{$dbPath}", null, null, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_TIMEOUT => 10,
+        ]);
+        $this->pdo->exec("PRAGMA journal_mode = WAL;");
+        $this->pdo->exec("PRAGMA busy_timeout = 5000;");
+        $this->pdo->exec("PRAGMA synchronous = NORMAL;");
 
         $this->migrate();
         $this->seedIfEmpty();
@@ -498,7 +503,9 @@ class TimyTecoDatabase
         $time = $time ?? date('Y-m-d H:i:s');
 
         // Next logindex
-        $maxIdx = (int) $this->pdo->query("SELECT COALESCE(MAX(logindex), 0) FROM attendance_logs")->fetchColumn();
+        $q = $this->pdo->query("SELECT COALESCE(MAX(logindex), 0) FROM attendance_logs");
+        $maxIdx = (int) $q->fetchColumn();
+        $q->closeCursor();
         $logIndex = $maxIdx + 1;
 
         $stmt = $this->pdo->prepare("

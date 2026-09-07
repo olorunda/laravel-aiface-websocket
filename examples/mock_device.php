@@ -196,6 +196,82 @@ while (true) {
                             echo "[Mock Device {$sn}] Upserted user in SQLite: enrollid={$enrollId}, name={$name}, backupnum={$backupNum}\n";
                             break;
 
+                        case 'adduser':
+                            $enrollId = (int) ($msg['enrollid'] ?? 0);
+                            $backupNum = (int) ($msg['backupnum'] ?? 0);
+                            $admin = (int) ($msg['admin'] ?? 0);
+                            $name = (string) ($msg['name'] ?? $db->getUserName($enrollId) ?? "User {$enrollId}");
+                            $aliasid = isset($msg['aliasid']) ? (string) $msg['aliasid'] : "EMP{$enrollId}";
+
+                            if (!empty($msg['cancel'])) {
+                                $reply['enrollid'] = $enrollId;
+                                $reply['cancel'] = true;
+                                echo "[Mock Device {$sn}] Cancelled adduser wizard for enrollid={$enrollId}\n";
+                                break;
+                            }
+
+                            // Generate simulated biometric template/credential data
+                            $mockRecord = match ($backupNum) {
+                                10 => '123456',
+                                11 => (string) rand(10000000, 99999999),
+                                12, 50 => bin2hex("MOCK_FACE_FEATURE_VECTOR_DATA_USER_{$enrollId}"),
+                                default => bin2hex("MOCK_FINGERPRINT_TEMPLATE_DATA_USER_{$enrollId}_SLOT_{$backupNum}"),
+                            };
+
+                            // Save newly enrolled user & credential into SQLite database
+                            $db->setUserInfo(
+                                enrollId: $enrollId,
+                                name: $name,
+                                backupNum: $backupNum,
+                                record: $mockRecord,
+                                admin: $admin,
+                                enable: 1,
+                                card: $backupNum === 11 ? $mockRecord : null,
+                                pwd: $backupNum === 10 ? $mockRecord : null,
+                                aliasid: $aliasid
+                            );
+
+                            $reply['enrollid'] = $enrollId;
+                            $reply['backupnum'] = $backupNum;
+                            if (!empty($aliasid)) {
+                                $reply['aliasid'] = $aliasid;
+                            }
+
+                            echo "[Mock Device {$sn}] Enrolled user in SQLite via adduser wizard: enrollid={$enrollId}, name={$name}, backupnum={$backupNum}, admin={$admin}\n";
+
+                            // Reply ACK
+                            sendClientFrame($sock, $reply);
+
+                            // Actively notify server with senduser report
+                            sendClientFrame($sock, [
+                                'cmd'       => 'senduser',
+                                'sn'        => $sn,
+                                'enrollid'  => $enrollId,
+                                'name'      => $name,
+                                'backupnum' => $backupNum,
+                                'admin'     => $admin,
+                                'record'    => $mockRecord,
+                            ]);
+                            continue 2;
+
+                        case 'canceladduser':
+                            $enrollId = (int) ($msg['enrollid'] ?? 0);
+                            $reply['enrollid'] = $enrollId;
+                            $reply['cancel'] = true;
+                            echo "[Mock Device {$sn}] Cancelled adduser wizard for enrollid={$enrollId}\n";
+                            break;
+
+                        case 'checkregstatus':
+                            $enrollId = (int) ($msg['enrollid'] ?? 0);
+                            $backupNum = (int) ($msg['backupnum'] ?? 0);
+                            $exists = $db->checkUserId($enrollId);
+                            $reply['enrollid'] = $enrollId;
+                            $reply['backupnum'] = $backupNum;
+                            $reply['status'] = $exists ? $backupNum : 0;
+                            $reply['msg'] = $exists ? 'Enrollment completed successfully' : 'Waiting for user input';
+                            echo "[Mock Device {$sn}] Checked reg status for enrollid={$enrollId}: status=" . $reply['status'] . "\n";
+                            break;
+
                         case 'deleteuser':
                             $enrollId = (int) ($msg['enrollid'] ?? 0);
                             $backupNum = isset($msg['backupnum']) && $msg['backupnum'] !== '' ? (int)$msg['backupnum'] : null;
