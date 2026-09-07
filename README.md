@@ -331,10 +331,16 @@ X-AiFace-Signature: sha256=abcdef123456...
 Run the included pure-PHP mock terminal simulator to test end-to-end communication without physical hardware:
 
 ```bash
+# Simulates physical hardware with an embedded SQLite database (tynyteko_LF00000001.sqlite):
 php examples/mock_device.php 127.0.0.1 7788 /pub/chat LF00000001
 ```
 
-Run test suite:
+The mock device maintains its own **local SQLite database** (`tynyteko_{SN}.sqlite`) simulating real hardware storage:
+- **Persistent Biometric Storage**: Real CRUD for users, credentials (passwords, RFID cards, facial feature templates, fingerprints).
+- **Dynamic Command Handling**: Responds to `setuserinfo`, `deleteuser`, `cleanuser`, `getusername`, `getuserlist`, `getuserids`, `getunuserdid`, `checkuserid`, `getuserinfo`, `getallusers`, `getdevcap`, `getdevinfo`, `settime`, etc.
+- **Realistic Attendance Simulation**: Generates facial scan punch logs (`sendlog`) for enrolled database users and processes server confirmations (`mark: true`).
+
+Run the test suite:
 ```bash
 vendor/bin/phpunit
 ```

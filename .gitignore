@@ -4,3 +4,5 @@
 .env
 .DS_Store
 *.sock
+*.sqlite
+*.sqlite-journal
