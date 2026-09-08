@@ -379,6 +379,19 @@ class WebSocketServer
                 $this->processAttendanceRecords($sn, $data, saveToDb: true);
             }
 
+            // If response is cleanuser, clear local database
+            if ($ret === 'cleanuser' && ($data['result'] ?? false)) {
+                $this->storage->cleanUser($sn);
+            }
+
+            // If response is deleteuser, delete from local database and fire UserDeleted event
+            if ($ret === 'deleteuser' && ($data['result'] ?? false) && isset($data['enrollid'])) {
+                $enrollId = $data['enrollid'];
+                $backupNum = isset($data['backupnum']) ? (int) $data['backupnum'] : Protocol::BACKUP_DELETE_USER;
+                $this->storage->deleteUser($sn, $enrollId, $backupNum);
+                $this->fireEvent(new UserDeleted($sn, $enrollId, $backupNum, $data));
+            }
+
             // Resolve any awaiting synchronous command future
             $conn->resolvePendingCommand($ret, $data);
 

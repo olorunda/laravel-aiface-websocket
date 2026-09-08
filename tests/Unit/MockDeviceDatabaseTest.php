@@ -63,22 +63,24 @@ class MockDeviceDatabaseTest extends TestCase
         $this->assertEquals('Normal User', $info['name']);
         $this->assertEquals('password123', $info['record']);
 
-        // 3. Update user 107
+        // 3. Update user 107 with password credential (backupNum = 10)
         $this->db->setUserInfo(
             enrollId: 107,
             name: 'Normal User Updated',
-            backupNum: 12,
-            record: 'FACE_HEX_DATA'
+            backupNum: 10,
+            record: '123456'
         );
         $this->assertEquals('Normal User Updated', $this->db->getUserName(107));
 
-        // 4. Delete specific credential
-        $this->db->deleteUser(107, 12);
-        $infoFace = $this->db->getUserInfo(107, 12);
-        $this->assertEquals('', $infoFace['record']);
+        // 4. Delete specific credential (password slot 10)
+        $this->db->deleteUser(107, 10);
+        $infoPwd = $this->db->getUserInfo(107, 10);
+        $this->assertNotNull($infoPwd);
+        $this->assertEquals('', $infoPwd['record']);
+        $this->assertTrue($this->db->checkUserId(107), 'User 107 should still exist after deleting credential 10');
 
-        // 5. Delete user entirely
-        $this->db->deleteUser(107);
+        // 5. Delete user entirely (backupNum 12 or omitted)
+        $this->db->deleteUser(107, 12);
         $this->assertFalse($this->db->checkUserId(107));
     }
 

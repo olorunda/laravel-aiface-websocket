@@ -23,6 +23,8 @@ class Protocol
 
     public const BACKUP_PASSWORD = 10;
     public const BACKUP_CARD = 11;
+    public const BACKUP_DELETE_USER = 12;  // Delete entire user (all credentials and photo)
+    public const BACKUP_DELETE_ALL = 13;   // Alternate code for deleting entire user
 
     public const BACKUP_PALM_LEFT = 40;
     public const BACKUP_PALM_RIGHT = 41;
@@ -79,6 +81,7 @@ class Protocol
             self::BACKUP_FP_9 => 'Fingerprint Slot #9',
             self::BACKUP_PASSWORD => 'Password / PIN',
             self::BACKUP_CARD => 'RFID / IC Card',
+            self::BACKUP_DELETE_USER, self::BACKUP_DELETE_ALL => 'Entire User (All Biometrics & Credentials)',
             self::BACKUP_PALM_LEFT => 'Left Palm Vein',
             self::BACKUP_PALM_RIGHT => 'Right Palm Vein',
             self::BACKUP_FACE_PHOTO => 'Face Photo (JPG)',
@@ -98,6 +101,7 @@ class Protocol
         return match ($backupnum) {
             self::BACKUP_PASSWORD => 'password',
             self::BACKUP_CARD => 'card',
+            self::BACKUP_DELETE_USER, self::BACKUP_DELETE_ALL => 'user',
             self::BACKUP_PALM_LEFT, self::BACKUP_PALM_RIGHT => 'palm',
             self::BACKUP_FACE_PHOTO => 'face_photo',
             self::BACKUP_FACE_FEATURE => 'face_feature',

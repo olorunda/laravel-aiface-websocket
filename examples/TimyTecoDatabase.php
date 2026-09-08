@@ -316,14 +316,15 @@ class TimyTecoDatabase
      */
     public function deleteUser(int $enrollId, ?int $backupNum = null): bool
     {
-        if ($backupNum !== null) {
-            // Delete specific credential
+        // In TimyTeco spec, backupnum 12 or 13 means delete entire user and all credentials
+        if ($backupNum !== null && $backupNum !== 12 && $backupNum !== 13) {
+            // Delete specific credential (e.g. card=11, pwd=10, fp=0-9, face=50)
             $stmt = $this->pdo->prepare("DELETE FROM user_credentials WHERE enrollid = ? AND backupnum = ?");
             $stmt->execute([$enrollId, $backupNum]);
             return true;
         }
 
-        // Delete entire user and all credentials
+        // Delete entire user and all associated credentials
         $this->pdo->prepare("DELETE FROM user_credentials WHERE enrollid = ?")->execute([$enrollId]);
         $stmt = $this->pdo->prepare("DELETE FROM users WHERE enrollid = ?");
         $stmt->execute([$enrollId]);

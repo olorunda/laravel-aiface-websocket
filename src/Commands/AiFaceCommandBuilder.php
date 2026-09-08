@@ -2,6 +2,8 @@
 
 namespace AiFace\WebSocket\Commands;
 
+use AiFace\WebSocket\Core\Protocol;
+
 /**
  * Exhaustive Command Builder for all 80+ TimyTeco AiFace WebSocket Commands.
  */
@@ -36,17 +38,21 @@ class AiFaceCommandBuilder
 
     /**
      * 5.2 deleteuser — Delete User or User Credential
+     *
+     * In TimyTeco protocol:
+     * - backupnum = 12 (or 13): Delete entire user (all biometrics, card, password)
+     * - backupnum = 10: Delete password only
+     * - backupnum = 11: Delete card only
+     * - backupnum = 50: Delete face photo
+     * - backupnum = 0-9: Delete specific fingerprint
      */
     public static function deleteUser(int|string $enrollId, ?int $backupNum = null): array
     {
-        $payload = [
+        return [
             'cmd' => 'deleteuser',
-            'enrollid' => $enrollId,
+            'enrollid' => is_numeric($enrollId) ? (int) $enrollId : $enrollId,
+            'backupnum' => $backupNum ?? Protocol::BACKUP_DELETE_USER,
         ];
-        if ($backupNum !== null) {
-            $payload['backupnum'] = $backupNum;
-        }
-        return $payload;
     }
 
     /**

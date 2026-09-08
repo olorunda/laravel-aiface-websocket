@@ -391,4 +391,59 @@ class StorageService
             return [];
         }
     }
+
+    /**
+     * Delete user or credential from local database.
+     */
+    public function deleteUser(string $sn, int|string $enrollId, ?int $backupNum = null): void
+    {
+        if (!$this->enabled) {
+            return;
+        }
+
+        try {
+            $credTable = $this->table('user_credentials');
+            $userTable = $this->table('users');
+
+            if ($backupNum !== null && $backupNum !== 12 && $backupNum !== 13) {
+                // Delete specific credential
+                DB::table($credTable)
+                    ->where('sn', $sn)
+                    ->where('enrollid', (string) $enrollId)
+                    ->where('backupnum', (int) $backupNum)
+                    ->delete();
+                return;
+            }
+
+            // Delete entire user and all credentials
+            DB::table($credTable)
+                ->where('sn', $sn)
+                ->where('enrollid', (string) $enrollId)
+                ->delete();
+
+            DB::table($userTable)
+                ->where('sn', $sn)
+                ->where('enrollid', (string) $enrollId)
+                ->delete();
+        } catch (\Throwable $e) {
+            Log::warning('StorageService::deleteUser failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Clean all users and credentials for a device from local database.
+     */
+    public function cleanUser(string $sn): void
+    {
+        if (!$this->enabled) {
+            return;
+        }
+
+        try {
+            DB::table($this->table('user_credentials'))->where('sn', $sn)->delete();
+            DB::table($this->table('users'))->where('sn', $sn)->delete();
+        } catch (\Throwable $e) {
+            Log::warning('StorageService::cleanUser failed: ' . $e->getMessage());
+        }
+    }
 }

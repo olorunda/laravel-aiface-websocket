@@ -166,7 +166,21 @@ class AiFaceDeviceClient
 
         $data = AiFaceCommandBuilder::deleteUser($enrollId, $backupNum);
         $cmd = array_shift($data);
-        return $this->send($cmd, $data);
+        $response = $this->send($cmd, $data);
+
+        // If deletion succeeded on hardware, fire local UserDeleted event
+        if (isset($response['result']) && $response['result'] === true) {
+            if (class_exists(\Illuminate\Support\Facades\Event::class) && \Illuminate\Support\Facades\Facade::getFacadeApplication()) {
+                \Illuminate\Support\Facades\Event::dispatch(new \AiFace\WebSocket\Events\UserDeleted(
+                    $this->sn,
+                    $enrollId,
+                    $backupNum ?? Protocol::BACKUP_DELETE_USER,
+                    $response
+                ));
+            }
+        }
+
+        return $response;
     }
 
     /**
