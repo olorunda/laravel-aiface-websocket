@@ -281,7 +281,7 @@ class StorageService
 
         try {
             $now = date('Y-m-d H:i:s');
-            $taskId = $task['id'] ?? $task['task_id'] ?? uniqid('task_del_');
+            $taskId = $task['id'] ?? $task['task_id'] ?? uniqid('task_');
             $executeAt = isset($task['execute_at']) ? (is_numeric($task['execute_at']) ? (int) $task['execute_at'] : strtotime($task['execute_at'])) : time();
 
             DB::table($this->table('scheduled_commands'))->insert([
@@ -293,7 +293,7 @@ class StorageService
                 'delay_seconds' => (int) ($task['delay_seconds'] ?? 0),
                 'execute_at'    => date('Y-m-d H:i:s', $executeAt),
                 'status'        => 'pending',
-                'payload'       => json_encode($task),
+                'payload'       => json_encode($task['payload'] ?? $task),
                 'created_at'    => $now,
                 'updated_at'    => $now,
             ]);
@@ -375,8 +375,17 @@ class StorageService
             $rows = $query->get();
             $tasks = [];
             foreach ($rows as $r) {
+                $rawPayload = [];
+                if (!empty($r->payload)) {
+                    $decoded = json_decode($r->payload, true);
+                    if (is_array($decoded)) {
+                        $rawPayload = $decoded['payload'] ?? $decoded;
+                    }
+                }
+
                 $tasks[$r->task_id] = [
                     'id'            => $r->task_id,
+                    'task_id'       => $r->task_id,
                     'sn'            => $r->sn,
                     'cmd'           => $r->cmd,
                     'enrollid'      => $r->enrollid,
@@ -384,6 +393,7 @@ class StorageService
                     'delay_seconds' => (int) $r->delay_seconds,
                     'execute_at'    => strtotime($r->execute_at),
                     'created_at'    => strtotime($r->created_at),
+                    'payload'       => $rawPayload,
                 ];
             }
             return $tasks;

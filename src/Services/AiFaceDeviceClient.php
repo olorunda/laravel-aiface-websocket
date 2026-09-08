@@ -168,8 +168,8 @@ class AiFaceDeviceClient
         $cmd = array_shift($data);
         $response = $this->send($cmd, $data);
 
-        // If deletion succeeded on hardware, fire local UserDeleted event
-        if (isset($response['result']) && $response['result'] === true) {
+        // If deletion succeeded on hardware, fire local UserDeleted event (if not queued for offline)
+        if (isset($response['result']) && $response['result'] === true && empty($response['queued'])) {
             if (class_exists(\Illuminate\Support\Facades\Event::class) && \Illuminate\Support\Facades\Facade::getFacadeApplication()) {
                 \Illuminate\Support\Facades\Event::dispatch(new \AiFace\WebSocket\Events\UserDeleted(
                     $this->sn,
@@ -236,6 +236,24 @@ class AiFaceDeviceClient
     public function getPendingDelayedDeletes(): array
     {
         return $this->send('getpendingdelayeddeletes');
+    }
+
+    /**
+     * Get all pending queued commands for this device (both offline queues & delayed tasks).
+     */
+    public function getPendingCommands(): array
+    {
+        return $this->send('getpendingcommands');
+    }
+
+    /**
+     * Cancel a pending queued command by task ID.
+     */
+    public function cancelQueuedCommand(string $taskId): array
+    {
+        return $this->send('cancelqueuedcommand', [
+            'task_id' => $taskId,
+        ]);
     }
 
     public function cleanUser(): array

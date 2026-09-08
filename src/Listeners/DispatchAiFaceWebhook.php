@@ -3,6 +3,7 @@
 namespace AiFace\WebSocket\Listeners;
 
 use AiFace\WebSocket\Events\AttendanceLogReceived;
+use AiFace\WebSocket\Events\CommandQueued;
 use AiFace\WebSocket\Events\CommandResponseReceived;
 use AiFace\WebSocket\Events\DeviceConnected;
 use AiFace\WebSocket\Events\DeviceDisconnected;
@@ -223,6 +224,21 @@ class DispatchAiFaceWebhook
     }
 
     /**
+     * Command Queued for offline / unresponsive device.
+     */
+    public function handleCommandQueued(CommandQueued $event): void
+    {
+        $this->webhooks->dispatch('command.queued', [
+            'sn'        => $event->sn,
+            'command'   => $event->command,
+            'payload'   => $event->payload,
+            'task_id'   => $event->taskId,
+            'reason'    => $event->reason,
+            'queued_at' => date('Y-m-d H:i:s'),
+        ]);
+    }
+
+    /**
      * Register the listeners for the subscriber.
      */
     public function subscribe(mixed $events): array
@@ -237,6 +253,7 @@ class DispatchAiFaceWebhook
             UserPushed::class              => 'handleUserPushed',
             UserDeleteScheduled::class     => 'handleUserDeleteScheduled',
             UserDeleted::class             => 'handleUserDeleted',
+            CommandQueued::class           => 'handleCommandQueued',
             PinReceived::class             => 'handlePinReceived',
             QrCodeScanned::class           => 'handleQrCodeScanned',
             GpsReceived::class             => 'handleGpsReceived',

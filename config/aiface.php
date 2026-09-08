@@ -20,6 +20,9 @@ return [
         // Command response wait timeout in seconds
         'command_timeout' => (int) env('AIFACE_COMMAND_TIMEOUT', 10),
 
+        // Automatically queue commands when device is offline or unresponsive instead of timing out
+        'auto_queue_offline' => (bool) env('AIFACE_AUTO_QUEUE_OFFLINE', true),
+
         // Local IPC bridge for CLI / PHP-FPM communication (default: 127.0.0.1:7789)
         'ipc_host' => env('AIFACE_IPC_HOST', '127.0.0.1'),
         'ipc_port' => (int) env('AIFACE_IPC_PORT', 7789),
@@ -136,6 +139,7 @@ return [
             'gps.received',
             'intercom.call',
             'command.response',
+            'command.queued',
             'device.disconnected',
         ],
     ],

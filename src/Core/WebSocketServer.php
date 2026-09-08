@@ -4,6 +4,7 @@ namespace AiFace\WebSocket\Core;
 
 use AiFace\WebSocket\Commands\AiFaceCommandBuilder;
 use AiFace\WebSocket\Events\AttendanceLogReceived;
+use AiFace\WebSocket\Events\CommandQueued;
 use AiFace\WebSocket\Events\CommandResponseReceived;
 use AiFace\WebSocket\Events\DeviceConnected;
 use AiFace\WebSocket\Events\DeviceDisconnected;
@@ -181,11 +182,14 @@ class WebSocketServer
      */
     public function tick(): void
     {
-        $read = [$this->serverSocket];
-        if ($this->ipcSocket) {
+        $read = [];
+        if (is_resource($this->serverSocket)) {
+            $read[] = $this->serverSocket;
+        }
+        if (is_resource($this->ipcSocket)) {
             $read[] = $this->ipcSocket;
         }
-        if ($this->ipcTcpSocket) {
+        if (is_resource($this->ipcTcpSocket)) {
             $read[] = $this->ipcTcpSocket;
         }
 
@@ -772,7 +776,7 @@ class WebSocketServer
     /**
      * Handle incoming command from local IPC socket (CLI or HTTP API).
      */
-    protected function handleIpcClient(mixed $listenSocket = null): void
+    public function handleIpcClient(mixed $listenSocket = null): void
     {
         $serverSocket = $listenSocket ?? $this->ipcTcpSocket ?? $this->ipcSocket;
         if (!$serverSocket) {
@@ -888,6 +892,18 @@ class WebSocketServer
 
             // Intercept get pending delayed deletions
             if ($cmd === 'getpendingdelayeddeletes') {
+                $tasks = array_values(array_filter($this->scheduledTasks, fn($t) => $t['sn'] === $sn && ($t['cmd'] ?? '') === 'deleteuser'));
+                @fwrite($ipcClient, json_encode([
+                    'result' => true,
+                    'count'  => count($tasks),
+                    'data'   => $tasks,
+                ]));
+                @fclose($ipcClient);
+                return;
+            }
+
+            // Intercept get all pending commands (queued offline commands & scheduled tasks)
+            if ($cmd === 'getpendingcommands') {
                 $tasks = array_values(array_filter($this->scheduledTasks, fn($t) => $t['sn'] === $sn));
                 @fwrite($ipcClient, json_encode([
                     'result' => true,
@@ -898,9 +914,43 @@ class WebSocketServer
                 return;
             }
 
+            // Intercept cancel queued command by task ID
+            if ($cmd === 'cancelqueuedcommand') {
+                $taskId = $payload['task_id'] ?? null;
+                $cancelled = false;
+                if ($taskId && isset($this->scheduledTasks[$taskId])) {
+                    unset($this->scheduledTasks[$taskId]);
+                    $this->storage->cancelScheduledCommand($taskId);
+                    $cancelled = true;
+                }
+                @fwrite($ipcClient, json_encode([
+                    'result'    => true,
+                    'cancelled' => $cancelled,
+                ]));
+                @fclose($ipcClient);
+                return;
+            }
+
             $conn = $this->registry->getBySn($sn);
+            $autoQueue = (bool) ($this->config['server']['auto_queue_offline'] ?? true);
+            if (isset($payload['no_queue']) && $payload['no_queue']) {
+                $autoQueue = false;
+            }
+
             if (!$conn) {
-                @fwrite($ipcClient, json_encode(['result' => false, 'error' => "Device [{$sn}] is offline or not registered"]));
+                if ($autoQueue) {
+                    $taskId = $this->queueCommand($sn, $cmd, $payload, 'offline');
+                    @fwrite($ipcClient, json_encode([
+                        'result'   => true,
+                        'queued'   => true,
+                        'task_id'  => $taskId,
+                        'sn'       => $sn,
+                        'cmd'      => $cmd,
+                        'message'  => "Device [{$sn}] is offline or not registered. Command [{$cmd}] has been queued and will be sent once the device comes online.",
+                    ]));
+                } else {
+                    @fwrite($ipcClient, json_encode(['result' => false, 'error' => "Device [{$sn}] is offline or not registered"]));
+                }
                 @fclose($ipcClient);
                 return;
             }
@@ -919,7 +969,21 @@ class WebSocketServer
 
             if (!$conn->sendJson($fullPayload)) {
                 $conn->removePendingCommand($cmd);
-                @fwrite($ipcClient, json_encode(['result' => false, 'error' => 'Failed to write frame to device socket']));
+                $this->disconnect($conn, 'socket_write_failed');
+
+                if ($autoQueue) {
+                    $taskId = $this->queueCommand($sn, $cmd, $payload, 'socket_write_failed');
+                    @fwrite($ipcClient, json_encode([
+                        'result'   => true,
+                        'queued'   => true,
+                        'task_id'  => $taskId,
+                        'sn'       => $sn,
+                        'cmd'      => $cmd,
+                        'message'  => "Device [{$sn}] socket write failed. Command [{$cmd}] has been queued and will be sent once the device reconnects.",
+                    ]));
+                } else {
+                    @fwrite($ipcClient, json_encode(['result' => false, 'error' => 'Failed to write frame to device socket']));
+                }
                 @fclose($ipcClient);
                 return;
             }
@@ -936,7 +1000,23 @@ class WebSocketServer
             if ($resolved) {
                 @fwrite($ipcClient, json_encode(['result' => true, 'data' => $response]));
             } else {
-                @fwrite($ipcClient, json_encode(['result' => false, 'error' => "Command [{$cmd}] timed out waiting for device response"]));
+                // Command timed out waiting for device response.
+                // Disconnect the unresponsive connection so subsequent commands queue immediately.
+                $this->disconnect($conn, 'command_timeout');
+
+                if ($autoQueue) {
+                    $taskId = $this->queueCommand($sn, $cmd, $payload, 'command_timeout');
+                    @fwrite($ipcClient, json_encode([
+                        'result'   => true,
+                        'queued'   => true,
+                        'task_id'  => $taskId,
+                        'sn'       => $sn,
+                        'cmd'      => $cmd,
+                        'message'  => "Command [{$cmd}] timed out waiting for device response. Command has been queued and will be sent once the device is online.",
+                    ]));
+                } else {
+                    @fwrite($ipcClient, json_encode(['result' => false, 'error' => "Command [{$cmd}] timed out waiting for device response"]));
+                }
             }
 
             @fclose($ipcClient);
@@ -1138,6 +1218,13 @@ class WebSocketServer
                     'enrollid'  => $event->enrollId,
                     'backupnum' => $event->backupNum,
                 ]);
+            } elseif ($event instanceof CommandQueued) {
+                $this->webhooks->dispatch('command.queued', [
+                    'sn'      => $event->sn,
+                    'command' => $event->command,
+                    'task_id' => $event->taskId,
+                    'reason'  => $event->reason,
+                ]);
             } elseif ($event instanceof CommandResponseReceived) {
                 $this->webhooks->dispatch('command.response', [
                     'sn'       => $event->sn,
@@ -1149,7 +1236,42 @@ class WebSocketServer
     }
 
     /**
-     * Check and execute due scheduled commands (e.g. delayed user deletion).
+     * Queue an arbitrary command for an offline or unresponsive device.
+     */
+    public function queueCommand(string $sn, string $cmd, array $payload = [], string $reason = 'offline'): string
+    {
+        $taskId = 'task_queue_' . uniqid();
+        $now = time();
+        $enrollId = $payload['enrollid'] ?? null;
+        $backupNum = $payload['backupnum'] ?? null;
+
+        $task = [
+            'id'            => $taskId,
+            'task_id'       => $taskId,
+            'sn'            => $sn,
+            'cmd'           => $cmd,
+            'enrollid'      => $enrollId !== null ? (string) $enrollId : null,
+            'backupnum'     => $backupNum !== null ? (int) $backupNum : null,
+            'delay_seconds' => 0,
+            'execute_at'    => $now,
+            'status'        => 'pending',
+            'payload'       => array_merge(['cmd' => $cmd, 'sn' => $sn], $payload),
+            'created_at'    => $now,
+            'reason'        => $reason,
+        ];
+
+        $this->scheduledTasks[$taskId] = $task;
+        $this->storage->saveScheduledCommand($task);
+
+        $this->fireEvent(new CommandQueued($sn, $cmd, $payload, $taskId, $reason));
+
+        $this->log("info", sprintf('Device [%s] is offline or unresponsive (%s). Queued command [%s] (task: %s) to execute upon reconnect.', $sn, $reason, $cmd, $taskId));
+
+        return $taskId;
+    }
+
+    /**
+     * Check and execute due scheduled commands (e.g. delayed user deletion or offline queued commands).
      */
     public function processScheduledTasks(): void
     {
@@ -1159,23 +1281,47 @@ class WebSocketServer
 
         $now = time();
         foreach ($this->scheduledTasks as $id => $task) {
-            if ($now >= $task['execute_at']) {
+            if ($now >= ($task['execute_at'] ?? 0)) {
                 $sn = $task['sn'];
-                $enrollId = $task['enrollid'];
-                $backupNum = $task['backupnum'];
-
                 $conn = $this->registry->getBySn($sn);
                 if ($conn) {
-                    $payload = AiFaceCommandBuilder::deleteUser($enrollId, $backupNum);
-                    $conn->sendJson($payload);
+                    $cmd = $task['cmd'] ?? '';
+                    if ($cmd === 'deleteuser') {
+                        $enrollId = $task['enrollid'] ?? ($task['payload']['enrollid'] ?? null);
+                        $backupNum = isset($task['backupnum']) && $task['backupnum'] !== null && $task['backupnum'] !== ''
+                            ? (int) $task['backupnum']
+                            : (isset($task['payload']['backupnum']) ? (int) $task['payload']['backupnum'] : Protocol::BACKUP_DELETE_USER);
 
-                    $this->storage->markScheduledCommandExecuted($id, ['executed_at' => date('Y-m-d H:i:s')]);
-                    $this->fireEvent(new UserDeleted($sn, $enrollId, $backupNum));
+                        $payload = AiFaceCommandBuilder::deleteUser($enrollId, $backupNum);
+                        $conn->sendJson($payload);
 
-                    $this->log("info", sprintf('Effected scheduled user deletion on device [%s] for user [%s]', $sn, $enrollId));
-                    unset($this->scheduledTasks[$id]);
+                        $this->storage->markScheduledCommandExecuted($id, ['executed_at' => date('Y-m-d H:i:s')]);
+                        $this->storage->deleteUser($sn, $enrollId, $backupNum);
+                        $this->fireEvent(new UserDeleted($sn, $enrollId, $backupNum));
+
+                        $this->log("info", sprintf('Effected scheduled user deletion on device [%s] for user [%s] (backupnum: %d)', $sn, $enrollId, $backupNum));
+                        unset($this->scheduledTasks[$id]);
+                    } else {
+                        // General queued command (e.g. setuserinfo, reboot, opendoor, cleanuser, etc.)
+                        $payload = !empty($task['payload']) && is_array($task['payload'])
+                            ? $task['payload']
+                            : ['cmd' => $cmd, 'sn' => $sn];
+
+                        $payload['cmd'] = $payload['cmd'] ?? $cmd;
+                        $payload['sn'] = $payload['sn'] ?? $sn;
+
+                        $conn->sendJson($payload);
+
+                        $this->storage->markScheduledCommandExecuted($id, [
+                            'executed_at' => date('Y-m-d H:i:s'),
+                            'sent'        => true,
+                        ]);
+
+                        $this->log("info", sprintf('Dispatched queued command [%s] to online device [%s] (task: %s)', $cmd, $sn, $id));
+                        unset($this->scheduledTasks[$id]);
+                    }
                 } else {
-                    $this->log("warning", sprintf('Scheduled deletion for user [%s] on device [%s] is due, but device is offline. Will execute upon reconnect.', $enrollId, $sn));
+                    $this->log("warning", sprintf('Scheduled command [%s] on device [%s] is due, but device is offline. Will execute upon reconnect.', $task['cmd'] ?? 'cmd', $sn));
                 }
             }
         }

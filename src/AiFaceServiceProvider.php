@@ -110,6 +110,8 @@ class AiFaceServiceProvider extends ServiceProvider
                     Route::delete('/devices/{sn}/users/{enrollid}', [AiFaceApiController::class, 'deleteUser']);
                     Route::get('/devices/{sn}/delayed-deletes', [AiFaceApiController::class, 'getPendingDelayedDeletes']);
                     Route::delete('/devices/{sn}/delayed-deletes/{enrollid}', [AiFaceApiController::class, 'cancelDelayedDelete']);
+                    Route::get('/devices/{sn}/queued-commands', [AiFaceApiController::class, 'getPendingCommands']);
+                    Route::delete('/devices/{sn}/queued-commands/{taskId}', [AiFaceApiController::class, 'cancelQueuedCommand']);
 
                     Route::get('/logs', [AiFaceApiController::class, 'listLogs']);
                     Route::get('/commands/catalog', [AiFaceApiController::class, 'commandCatalog']);

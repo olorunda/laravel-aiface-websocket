@@ -208,6 +208,24 @@ class AiFaceApiController extends Controller
     }
 
     /**
+     * Get list of all pending queued commands for a device.
+     */
+    public function getPendingCommands(string $sn): JsonResponse
+    {
+        $response = AiFace::device($sn)->getPendingCommands();
+        return response()->json($response);
+    }
+
+    /**
+     * Cancel a pending queued command by task ID.
+     */
+    public function cancelQueuedCommand(string $sn, string $taskId): JsonResponse
+    {
+        $response = AiFace::device($sn)->cancelQueuedCommand($taskId);
+        return response()->json($response);
+    }
+
+    /**
      * Fetch recent attendance records from database.
      */
     public function listLogs(Request $request): JsonResponse

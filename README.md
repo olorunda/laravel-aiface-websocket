@@ -439,6 +439,8 @@ Every command defined in the TimyTeco AiFace specification is implemented with t
 | `delayedDeleteUser($enrollId, $delay, $backupNum = null)` | `delayeddelete` | Schedule user/credential deletion after delay elapses (offline resilient) |
 | `cancelDelayedDelete($enrollId)` | `canceldelayeddelete` | Cancel pending delayed deletion for user |
 | `getPendingDelayedDeletes()` | `getpendingdelayeddeletes` | Retrieve list of all scheduled delayed delete tasks |
+| `getPendingCommands()` | `getpendingcommands` | Retrieve all pending queued commands (offline queue & scheduled tasks) |
+| `cancelQueuedCommand($taskId)` | `cancelqueuedcommand` | Cancel any pending queued command by task ID |
 | `cleanUser()` | `cleanuser` | Clear all users from hardware |
 | `setUserName(array $users)` | `setusername` | Batch set user names |
 | `getUserName($enrollId)` | `getusername` | Query user name by ID |
@@ -559,9 +561,36 @@ Every command defined in the TimyTeco AiFace specification is implemented with t
 - `DELETE /api/aiface/devices/{sn}/users/{enrollid}`: Delete user immediately or schedule delayed deletion (`?delay=3600`).
 - `GET /api/aiface/devices/{sn}/delayed-deletes`: List all scheduled delayed deletions for device.
 - `DELETE /api/aiface/devices/{sn}/delayed-deletes/{enrollid}`: Cancel a scheduled delayed deletion.
+- `GET /api/aiface/devices/{sn}/queued-commands`: List all pending queued & scheduled commands for device.
+- `DELETE /api/aiface/devices/{sn}/queued-commands/{taskId}`: Cancel a pending queued command by task ID.
 - `GET /api/aiface/devices/{sn}/new-logs`: Fetch unread logs.
 - `GET /api/aiface/logs`: View stored attendance punches.
 - `GET /api/aiface/commands/catalog`: Complete command schema catalog.
+
+### 🛡️ Automatic Offline Command Queueing & Auto-Flush on Reconnect
+
+In real-world deployments, biometric devices may temporarily lose Wi-Fi or go offline during maintenance. Rather than displaying errors or timing out waiting for a device response:
+
+```json
+{"result":false,"error":"Command [cmd] timed out waiting for device response"}
+```
+
+The server **automatically intercepts offline or unresponsive states and queues the command**:
+
+```json
+{
+  "result": true,
+  "queued": true,
+  "task_id": "task_queue_66e04...",
+  "sn": "LF00000001",
+  "cmd": "setuserinfo",
+  "message": "Device [LF00000001] is offline or unresponsive. Command [setuserinfo] has been queued and will be sent once the device comes online."
+}
+```
+
+1. **Persistent Backing**: Commands are persisted in memory and in the `aiface_scheduled_commands` database table. If the server daemon restarts, pending commands are recovered automatically.
+2. **Auto-Flush Upon Reconnect**: The instant the physical device connects and registers with the WebSocket daemon (`cmd: reg`), the daemon flushes and dispatches all pending queued commands in FIFO order!
+3. **Event & Webhook**: Fires the `CommandQueued` event (`command.queued` webhook).
 
 Import `postman_collection.json` into Postman for ready-to-use requests.
 
