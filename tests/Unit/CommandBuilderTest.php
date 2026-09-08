@@ -22,7 +22,8 @@ class CommandBuilderTest extends TestCase
         $cmdDefault = AiFaceCommandBuilder::deleteUser(101);
         $this->assertEquals('deleteuser', $cmdDefault['cmd']);
         $this->assertEquals(101, $cmdDefault['enrollid']);
-        $this->assertEquals(Protocol::BACKUP_DELETE_USER, $cmdDefault['backupnum']); // 12 for full user deletion
+        $this->assertEquals(13, $cmdDefault['backupnum']); // 13 for default full user deletion
+        $this->assertEquals(Protocol::BACKUP_DELETE_USER, $cmdDefault['backupnum']);
 
         $cmd = AiFaceCommandBuilder::deleteUser(101, Protocol::BACKUP_PASSWORD);
         $this->assertEquals('deleteuser', $cmd['cmd']);

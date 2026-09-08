@@ -23,8 +23,8 @@ class Protocol
 
     public const BACKUP_PASSWORD = 10;
     public const BACKUP_CARD = 11;
-    public const BACKUP_DELETE_USER = 12;  // Delete entire user (all credentials and photo)
-    public const BACKUP_DELETE_ALL = 13;   // Alternate code for deleting entire user
+    public const BACKUP_DELETE_USER = 13;  // Delete entire user (all credentials and photo)
+    public const BACKUP_DELETE_ALL = 12;   // Alternate code for deleting entire user
 
     public const BACKUP_PALM_LEFT = 40;
     public const BACKUP_PALM_RIGHT = 41;

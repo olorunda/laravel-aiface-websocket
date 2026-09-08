@@ -40,7 +40,7 @@ class AiFaceCommandBuilder
      * 5.2 deleteuser — Delete User or User Credential
      *
      * In TimyTeco protocol:
-     * - backupnum = 12 (or 13): Delete entire user (all biometrics, card, password)
+     * - backupnum = 13 (or 12): Delete entire user (all biometrics, card, password) [Default: 13]
      * - backupnum = 10: Delete password only
      * - backupnum = 11: Delete card only
      * - backupnum = 50: Delete face photo
