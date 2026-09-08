@@ -370,15 +370,20 @@ class WebSocketServer
         // Case 2: Device is returning a response to a server command
         if (isset($data['ret'])) {
             $ret = $data['ret'];
-            $sn = $data['sn'] ?? $conn->getSn();
+            $sn = $data['sn'] ?? $conn->getSn() ?? '';
 
-            $this->log("debug", sprintf('Device [%s] returned response for cmd [%s]: %s', $sn ?? 'unknown', $ret, json_encode($data)));
+            $this->log("debug", sprintf('Device [%s] returned response for cmd [%s]: %s', $sn ?: 'unknown', $ret, json_encode($data)));
+
+            // If response is getnewlog or getalllog and contains records, process and fire clocking events
+            if (in_array($ret, ['getnewlog', 'getalllog'], true) && (!empty($data['record']) || !empty($data['records']))) {
+                $this->processAttendanceRecords($sn, $data, saveToDb: true);
+            }
 
             // Resolve any awaiting synchronous command future
             $conn->resolvePendingCommand($ret, $data);
 
-            $this->fireEvent(new CommandResponseReceived($sn ?? '', $ret, $data));
-            $this->storage->logCommand($sn ?? '', $ret, [], $data);
+            $this->fireEvent(new CommandResponseReceived($sn ?: '', $ret, $data));
+            $this->storage->logCommand($sn ?: '', $ret, [], $data);
         }
     }
 
@@ -481,6 +486,89 @@ class WebSocketServer
     }
 
     /**
+     * Process, normalize, save, and dispatch events for attendance records received via push or query.
+     *
+     * @return array Normalized list of attendance records
+     */
+    public function processAttendanceRecords(string $sn, array $data, bool $saveToDb = true): array
+    {
+        $rawRecords = $data['record'] ?? $data['records'] ?? [];
+        if (is_string($rawRecords)) {
+            $rawRecords = json_decode($rawRecords, true) ?? [];
+        }
+
+        // Handle single associative record (e.g. {"enrollid": 123, ...} instead of [{"enrollid": 123, ...}])
+        if (is_array($rawRecords) && (isset($rawRecords['enrollid']) || isset($rawRecords['time']) || isset($rawRecords['punch_time']))) {
+            $rawRecords = [$rawRecords];
+        }
+
+        // Handle flat record at root level of $data
+        if (empty($rawRecords) && (isset($data['enrollid']) || isset($data['time']) || isset($data['punch_time']))) {
+            $rawRecords = [$data];
+        }
+
+        if (!is_array($rawRecords) || empty($rawRecords)) {
+            return [];
+        }
+
+        $normalized = [];
+        foreach ($rawRecords as $rec) {
+            if (!is_array($rec)) {
+                continue;
+            }
+
+            $enrollId = $rec['enrollid'] ?? $rec['enroll_id'] ?? $rec['user_id'] ?? $rec['id'] ?? 0;
+            $name = (string) ($rec['name'] ?? '');
+            $time = (string) ($rec['time'] ?? $rec['punch_time'] ?? date('Y-m-d H:i:s'));
+            $mode = (int) ($rec['mode'] ?? 3);
+
+            // Determine direction: inout (0=in, 1=out, 2=break-out, 3=break-in, 4=ot-in, 5=ot-out)
+            $inoutVal = $rec['inout'] ?? $rec['direction'] ?? null;
+            $eventVal = $rec['event'] ?? null;
+            $actionVal = strtolower((string) ($rec['action'] ?? ''));
+
+            $isClockOut = false;
+            if ($inoutVal !== null) {
+                $iv = is_numeric($inoutVal) ? (int) $inoutVal : (in_array(strtolower((string) $inoutVal), ['out', 'clockout', 'clock_out'], true) ? 1 : 0);
+                $isClockOut = in_array($iv, [1, 2, 5], true);
+            } elseif ($actionVal === 'clock_out' || $actionVal === 'clockout' || $actionVal === 'out') {
+                $isClockOut = true;
+            } elseif ($eventVal !== null && in_array((int) $eventVal, [1, 2, 5], true)) {
+                $isClockOut = true;
+            }
+
+            $rec['inout'] = $isClockOut ? 1 : 0;
+            $rec['enrollid'] = $enrollId;
+            $rec['name'] = $name;
+            $rec['time'] = $time;
+            $rec['mode'] = $mode;
+
+            $normalized[] = $rec;
+
+            // Fire individual clock-in or clock-out event
+            if ($isClockOut) {
+                $this->fireEvent(new UserClockedOut($sn, $rec));
+                $this->log("info", sprintf('Device [%s] user #%s (%s) CLOCKED OUT at %s via %s', $sn, $enrollId, $name, $time, Protocol::getLogModeDesc($mode)));
+            } else {
+                $this->fireEvent(new UserClockedIn($sn, $rec));
+                $this->log("info", sprintf('Device [%s] user #%s (%s) CLOCKED IN at %s via %s', $sn, $enrollId, $name, $time, Protocol::getLogModeDesc($mode)));
+            }
+        }
+
+        if (!empty($normalized)) {
+            // Save to database if requested
+            if ($saveToDb) {
+                $this->storage->saveAttendanceLogs($sn, $normalized);
+            }
+
+            // Fire batch attendance log received event
+            $this->fireEvent(new AttendanceLogReceived($sn, $normalized, count($normalized)));
+        }
+
+        return $normalized;
+    }
+
+    /**
      * 10.1 sendlog — Device reports attendance records
      */
     protected function handleSendLog(DeviceConnection $conn, array $data): void
@@ -488,17 +576,17 @@ class WebSocketServer
         $sn = $data['sn'] ?? $conn->getSn() ?? '';
         $count = (int) ($data['count'] ?? 0);
         $logIndex = (int) ($data['logindex'] ?? 0);
-        $records = $data['record'] ?? [];
 
-        // Save records to database
-        $savedCount = $this->storage->saveAttendanceLogs($sn, $records);
+        // Process, normalize, save, and fire all clock-in / clock-out events
+        $normalizedRecords = $this->processAttendanceRecords($sn, $data, saveToDb: true);
+        $savedCount = count($normalizedRecords);
 
         $cfg = $this->config['reports']['sendlog'] ?? [];
 
         $response = [
             'ret' => 'sendlog',
             'result' => true,
-            'count' => $count,
+            'count' => $count > 0 ? $count : count($normalizedRecords),
             'logindex' => $logIndex,
             'mark' => (bool) ($cfg['auto_mark'] ?? true),
             'access' => (int) ($cfg['default_access'] ?? 1),
@@ -511,25 +599,13 @@ class WebSocketServer
         ];
 
         // If single record, include name for display
-        if (count($records) === 1 && !empty($records[0]['name'])) {
-            $response['name'] = $records[0]['name'];
+        if (count($normalizedRecords) === 1 && !empty($normalizedRecords[0]['name'])) {
+            $response['name'] = $normalizedRecords[0]['name'];
         }
 
         $conn->sendJson($response);
 
-        // Fire individual clock-in and clock-out events for each punch
-        foreach ($records as $rec) {
-            $inout = (int) ($rec['inout'] ?? 0);
-            if ($inout === 1) {
-                $this->fireEvent(new UserClockedOut($sn, $rec));
-            } else {
-                $this->fireEvent(new UserClockedIn($sn, $rec));
-            }
-        }
-
-        $this->fireEvent(new AttendanceLogReceived($sn, $records, $count));
-
-        $this->log("info", sprintf('Device [%s] reported %d attendance logs (saved: %d)', $sn, $count, $savedCount));
+        $this->log("info", sprintf('Device [%s] reported %d attendance logs (processed: %d)', $sn, $count, $savedCount));
     }
 
     /**

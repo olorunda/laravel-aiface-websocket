@@ -225,7 +225,7 @@ class DispatchAiFaceWebhook
     /**
      * Register the listeners for the subscriber.
      */
-    public function subscribe(Dispatcher $events): array
+    public function subscribe(mixed $events): array
     {
         return [
             UserClockedIn::class           => 'handleUserClockedIn',

@@ -137,8 +137,16 @@ class AiFaceManager
     /**
      * Shortcut: Pull new attendance logs.
      */
-    public function getNewLog(string $sn): array
+    public function getNewLog(string $sn, bool $fireLocalEvents = true): array
     {
-        return $this->device($sn)->getNewLog();
+        return $this->device($sn)->getNewLog($fireLocalEvents);
+    }
+
+    /**
+     * Shortcut: Dispatch UserClockedIn / UserClockedOut events for attendance records.
+     */
+    public function dispatchAttendanceEvents(string $sn, array $records): array
+    {
+        return $this->device($sn)->dispatchAttendanceEvents($records);
     }
 }

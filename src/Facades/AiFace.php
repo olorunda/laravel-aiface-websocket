@@ -12,7 +12,8 @@ use Illuminate\Support\Facades\Facade;
  * @method static array openDoor(string $sn, int $doorNum = 1)
  * @method static array reboot(string $sn)
  * @method static array syncTime(string $sn)
- * @method static array getNewLog(string $sn)
+ * @method static array getNewLog(string $sn, bool $fireLocalEvents = true)
+ * @method static array dispatchAttendanceEvents(string $sn, array $records)
  *
  * @see \AiFace\WebSocket\Services\AiFaceManager
  */

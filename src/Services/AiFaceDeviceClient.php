@@ -310,17 +310,82 @@ class AiFaceDeviceClient
     // 6. LOG MANAGEMENT
     // ==========================================
 
-    public function getNewLog(): array
+    public function getNewLog(bool $fireLocalEvents = true): array
     {
-        return $this->send('getnewlog');
+        $response = $this->send('getnewlog');
+        if ($fireLocalEvents && isset($response['record']) && is_array($response['record'])) {
+            $this->dispatchAttendanceEvents($response['record']);
+        }
+        return $response;
     }
 
-    public function getAllLog(int $page = 1, int $pageSize = 100, ?string $startTime = null, ?string $endTime = null): array
+    public function getAllLog(int $page = 1, int $pageSize = 100, ?string $startTime = null, ?string $endTime = null, bool $fireLocalEvents = true): array
     {
         $params = ['page' => $page, 'pagesize' => $pageSize];
         if ($startTime) $params['starttime'] = $startTime;
         if ($endTime)   $params['endtime'] = $endTime;
-        return $this->send('getalllog', $params);
+        $response = $this->send('getalllog', $params);
+        if ($fireLocalEvents && isset($response['record']) && is_array($response['record'])) {
+            $this->dispatchAttendanceEvents($response['record']);
+        }
+        return $response;
+    }
+
+    /**
+     * Dispatch UserClockedIn and UserClockedOut events in the current Laravel application process.
+     * Useful when logs are retrieved via API/SDK or pulled from database.
+     *
+     * @param array $records Single record or array of attendance records
+     * @return array Normalized records for which events were fired
+     */
+    public function dispatchAttendanceEvents(array $records): array
+    {
+        if (empty($records)) {
+            return [];
+        }
+
+        // Normalize if single record (associative array)
+        if (isset($records['enrollid']) || isset($records['time']) || isset($records['punch_time'])) {
+            $records = [$records];
+        }
+
+        $dispatched = [];
+        foreach ($records as $rec) {
+            if (!is_array($rec)) {
+                continue;
+            }
+
+            $inoutVal = $rec['inout'] ?? $rec['direction'] ?? null;
+            $eventVal = $rec['event'] ?? null;
+            $actionVal = strtolower((string) ($rec['action'] ?? ''));
+
+            $isClockOut = false;
+            if ($inoutVal !== null) {
+                $iv = is_numeric($inoutVal) ? (int) $inoutVal : (in_array(strtolower((string) $inoutVal), ['out', 'clockout', 'clock_out'], true) ? 1 : 0);
+                $isClockOut = in_array($iv, [1, 2, 5], true);
+            } elseif ($actionVal === 'clock_out' || $actionVal === 'clockout' || $actionVal === 'out') {
+                $isClockOut = true;
+            } elseif ($eventVal !== null && in_array((int) $eventVal, [1, 2, 5], true)) {
+                $isClockOut = true;
+            }
+
+            $rec['inout'] = $isClockOut ? 1 : 0;
+            $dispatched[] = $rec;
+
+            if (class_exists(\Illuminate\Support\Facades\Event::class) && \Illuminate\Support\Facades\Facade::getFacadeApplication()) {
+                if ($isClockOut) {
+                    \Illuminate\Support\Facades\Event::dispatch(new \AiFace\WebSocket\Events\UserClockedOut($this->sn, $rec));
+                } else {
+                    \Illuminate\Support\Facades\Event::dispatch(new \AiFace\WebSocket\Events\UserClockedIn($this->sn, $rec));
+                }
+            }
+        }
+
+        if (!empty($dispatched) && class_exists(\Illuminate\Support\Facades\Event::class) && \Illuminate\Support\Facades\Facade::getFacadeApplication()) {
+            \Illuminate\Support\Facades\Event::dispatch(new \AiFace\WebSocket\Events\AttendanceLogReceived($this->sn, $dispatched, count($dispatched)));
+        }
+
+        return $dispatched;
     }
 
     public function cleanLog(): array
