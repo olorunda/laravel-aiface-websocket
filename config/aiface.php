@@ -172,4 +172,20 @@ return [
         'prefix' => env('AIFACE_DASHBOARD_PREFIX', 'aiface/dashboard'),
         'middleware' => ['web'],
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Logging Configuration
+    |--------------------------------------------------------------------------
+    |
+    | Configure whether daemon and service activity should be logged,
+    | the minimum log level (debug, info, notice, warning, error),
+    | and the target log channel (null writes to default Laravel log stack).
+    |
+    */
+    'logging' => [
+        'enabled' => (bool) env('AIFACE_LOGGING_ENABLED', true),
+        'channel' => env('AIFACE_LOG_CHANNEL', null),
+        'level'   => env('AIFACE_LOG_LEVEL', 'info'),
+    ],
 ];

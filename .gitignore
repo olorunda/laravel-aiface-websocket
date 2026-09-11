@@ -8,3 +8,4 @@
 *.sqlite-journal
 *.sqlite-wal
 *.sqlite-shm
+*.code-workspace

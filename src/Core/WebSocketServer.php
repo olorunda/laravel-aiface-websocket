@@ -240,7 +240,7 @@ class WebSocketServer
         $conn = new DeviceConnection($clientSocket);
         $this->registry->add($conn);
 
-        $this->log("info", sprintf('New TCP connection from %s:%d (id: %s)', $conn->getRemoteIp(), $conn->getRemotePort(), $conn->getId()));
+        $this->log("debug", sprintf('New TCP connection from %s:%d (id: %s)', $conn->getRemoteIp(), $conn->getRemotePort(), $conn->getId()));
     }
 
     /**
@@ -1062,7 +1062,8 @@ class WebSocketServer
 
         $this->fireEvent(new DeviceDisconnected($sn, $id, $reason));
 
-        $this->log("info", sprintf('Disconnected connection [%s] (sn: %s). Reason: %s', $id, $sn ?? 'unknown', $reason));
+        $logLevel = $conn->isHandshakeDone() ? 'info' : 'debug';
+        $this->log($logLevel, sprintf('Disconnected connection [%s] (sn: %s). Reason: %s', $id, $sn ?? 'unknown', $reason));
     }
 
     public function stop(): void
@@ -1093,9 +1094,33 @@ class WebSocketServer
 
     protected function log(string $level, string $message): void
     {
+        $logConfig = $this->config['logging'] ?? [];
+        if (isset($logConfig['enabled']) && !$logConfig['enabled']) {
+            return;
+        }
+
+        $minLevel = strtolower($logConfig['level'] ?? 'info');
+        $priorities = [
+            'debug'     => 100,
+            'info'      => 200,
+            'notice'    => 250,
+            'warning'   => 300,
+            'error'     => 400,
+            'critical'  => 500,
+            'alert'     => 550,
+            'emergency' => 600,
+        ];
+
+        $levelLower = strtolower($level);
+        if (($priorities[$levelLower] ?? 200) < ($priorities[$minLevel] ?? 200)) {
+            return;
+        }
+
         try {
             if (class_exists(\Illuminate\Support\Facades\Log::class) && \Illuminate\Support\Facades\Facade::getFacadeApplication()) {
-                \Illuminate\Support\Facades\Log::$level($message);
+                $channel = $logConfig['channel'] ?? null;
+                $logger = $channel ? \Illuminate\Support\Facades\Log::channel($channel) : \Illuminate\Support\Facades\Log::getFacadeRoot();
+                $logger->$level($message);
             }
         } catch (\Throwable) {
             // Silently continue outside Laravel
@@ -1256,8 +1281,9 @@ class WebSocketServer
             'execute_at'    => $now,
             'status'        => 'pending',
             'payload'       => array_merge(['cmd' => $cmd, 'sn' => $sn], $payload),
-            'created_at'    => $now,
-            'reason'        => $reason,
+            'created_at'     => $now,
+            'reason'         => $reason,
+            'offline_warned' => true,
         ];
 
         $this->scheduledTasks[$taskId] = $task;
@@ -1321,7 +1347,12 @@ class WebSocketServer
                         unset($this->scheduledTasks[$id]);
                     }
                 } else {
-                    $this->log("warning", sprintf('Scheduled command [%s] on device [%s] is due, but device is offline. Will execute upon reconnect.', $task['cmd'] ?? 'cmd', $sn));
+                    // Device is offline; do NOT spam logs on every iteration of the event loop.
+                    // Log at most once when a delayed task becomes due and is waiting for reconnect.
+                    if (empty($this->scheduledTasks[$id]['offline_warned'])) {
+                        $this->scheduledTasks[$id]['offline_warned'] = true;
+                        $this->log("debug", sprintf('Scheduled command [%s] on device [%s] is due, waiting for device to reconnect.', $task['cmd'] ?? 'cmd', $sn));
+                    }
                 }
             }
         }

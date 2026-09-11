@@ -76,6 +76,20 @@ php artisan vendor:publish --tag=aiface-config
 php artisan migrate
 ```
 
+#### Daemon Logging Configuration (`.env`)
+Fine-tune or isolate daemon logs to prevent log pollution on high-traffic servers:
+
+```env
+# Enable or disable daemon and storage logging (default: true)
+AIFACE_LOGGING_ENABLED=true
+
+# Dedicated Laravel log channel, e.g. daily, aiface, stderr (default: null uses default stack)
+AIFACE_LOG_CHANNEL=daily
+
+# Minimum log level: debug, info, notice, warning, error (default: info)
+AIFACE_LOG_LEVEL=info
+```
+
 ### 3. Start the WebSocket Server Daemon
 
 ```bash

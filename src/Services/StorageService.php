@@ -70,7 +70,7 @@ class StorageService
                 DB::table($tableName)->insert($data);
             }
         } catch (\Throwable $e) {
-            Log::warning('StorageService::saveDevice failed: ' . $e->getMessage());
+            $this->log('warning', 'StorageService::saveDevice failed: ' . $e->getMessage());
         }
     }
 
@@ -92,7 +92,7 @@ class StorageService
                     'updated_at' => date('Y-m-d H:i:s'),
                 ]);
         } catch (\Throwable $e) {
-            Log::warning('StorageService::updateDeviceStatus failed: ' . $e->getMessage());
+            $this->log('warning', 'StorageService::updateDeviceStatus failed: ' . $e->getMessage());
         }
     }
 
@@ -148,7 +148,7 @@ class StorageService
                 $saved = count($insertRows);
             }
         } catch (\Throwable $e) {
-            Log::warning('StorageService::saveAttendanceLogs failed: ' . $e->getMessage());
+            $this->log('warning', 'StorageService::saveAttendanceLogs failed: ' . $e->getMessage());
         }
 
         return $saved;
@@ -221,7 +221,7 @@ class StorageService
                 ]);
             }
         } catch (\Throwable $e) {
-            Log::warning('StorageService::saveUserReport failed: ' . $e->getMessage());
+            $this->log('warning', 'StorageService::saveUserReport failed: ' . $e->getMessage());
         }
     }
 
@@ -243,7 +243,7 @@ class StorageService
                 'created_at' => date('Y-m-d H:i:s'),
             ]);
         } catch (\Throwable $e) {
-            Log::warning('StorageService::saveGpsLocation failed: ' . $e->getMessage());
+            $this->log('warning', 'StorageService::saveGpsLocation failed: ' . $e->getMessage());
         }
     }
 
@@ -298,7 +298,7 @@ class StorageService
                 'updated_at'    => $now,
             ]);
         } catch (\Throwable $e) {
-            Log::warning('StorageService::saveScheduledCommand failed: ' . $e->getMessage());
+            $this->log('warning', 'StorageService::saveScheduledCommand failed: ' . $e->getMessage());
         }
     }
 
@@ -320,7 +320,7 @@ class StorageService
                     'updated_at' => date('Y-m-d H:i:s'),
                 ]);
         } catch (\Throwable $e) {
-            Log::warning('StorageService::markScheduledCommandExecuted failed: ' . $e->getMessage());
+            $this->log('warning', 'StorageService::markScheduledCommandExecuted failed: ' . $e->getMessage());
         }
     }
 
@@ -348,7 +348,7 @@ class StorageService
                 'updated_at' => date('Y-m-d H:i:s'),
             ]);
         } catch (\Throwable $e) {
-            Log::warning('StorageService::cancelScheduledCommand failed: ' . $e->getMessage());
+            $this->log('warning', 'StorageService::cancelScheduledCommand failed: ' . $e->getMessage());
             return 0;
         }
     }
@@ -392,8 +392,9 @@ class StorageService
                     'backupnum'     => $r->backupnum,
                     'delay_seconds' => (int) $r->delay_seconds,
                     'execute_at'    => strtotime($r->execute_at),
-                    'created_at'    => strtotime($r->created_at),
-                    'payload'       => $rawPayload,
+                    'created_at'     => strtotime($r->created_at),
+                    'payload'        => $rawPayload,
+                    'offline_warned' => true,
                 ];
             }
             return $tasks;
@@ -436,7 +437,7 @@ class StorageService
                 ->where('enrollid', (string) $enrollId)
                 ->delete();
         } catch (\Throwable $e) {
-            Log::warning('StorageService::deleteUser failed: ' . $e->getMessage());
+            $this->log('warning', 'StorageService::deleteUser failed: ' . $e->getMessage());
         }
     }
 
@@ -453,7 +454,25 @@ class StorageService
             DB::table($this->table('user_credentials'))->where('sn', $sn)->delete();
             DB::table($this->table('users'))->where('sn', $sn)->delete();
         } catch (\Throwable $e) {
-            Log::warning('StorageService::cleanUser failed: ' . $e->getMessage());
+            $this->log('warning', 'StorageService::cleanUser failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Internal logger respecting aiface logging configuration.
+     */
+    protected function log(string $level, string $message): void
+    {
+        try {
+            if (class_exists(Log::class) && \Illuminate\Support\Facades\Facade::getFacadeApplication()) {
+                if (config('aiface.logging.enabled', true) === false) {
+                    return;
+                }
+                $channel = config('aiface.logging.channel');
+                $logger = $channel ? Log::channel($channel) : Log::getFacadeRoot();
+                $logger->$level($message);
+            }
+        } catch (\Throwable) {
         }
     }
 }

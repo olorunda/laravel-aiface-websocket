@@ -61,7 +61,14 @@ class WebhookForwarder
 
             Http::timeout($this->timeout)->withHeaders($headers)->post($this->url, json_decode($body, true));
         } catch (\Throwable $e) {
-            Log::warning(sprintf('AiFace Webhook forward failed for [%s]: %s', $event, $e->getMessage()));
+            if (($this->config['logging']['enabled'] ?? true) !== false) {
+                try {
+                    $channel = $this->config['logging']['channel'] ?? null;
+                    $logger = $channel ? Log::channel($channel) : Log::getFacadeRoot();
+                    $logger->warning(sprintf('AiFace Webhook forward failed for [%s]: %s', $event, $e->getMessage()));
+                } catch (\Throwable) {
+                }
+            }
         }
     }
 }
