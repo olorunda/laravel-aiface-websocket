@@ -71,9 +71,31 @@ composer require olorunda/laravel-aiface-websocket
 
 ### 2. Publish Configuration & Run Database Migrations
 
+#### A. Fresh Installation
+Run migrations directly (the service provider auto-loads all package migrations):
+
 ```bash
 php artisan vendor:publish --tag=aiface-config
 php artisan migrate
+```
+
+#### B. Upgrading Existing Installations (v1.2.0+)
+If upgrading an existing Laravel project to v1.2.0+, run the standard migration command:
+
+```bash
+# Automatically applies the new aiface_command_history user columns (enroll_id, name, backupnum, status)
+php artisan migrate
+```
+
+*(Optional) If you previously published migrations to your application's `database/migrations` directory, re-publish them:*
+```bash
+php artisan vendor:publish --tag=aiface-migrations --force
+php artisan migrate
+```
+
+*(Optional) Run directly from package path if auto-discovery is customized:*
+```bash
+php artisan migrate --path=vendor/olorunda/laravel-aiface-websocket/database/migrations
 ```
 
 #### Daemon Logging Configuration (`.env`)
