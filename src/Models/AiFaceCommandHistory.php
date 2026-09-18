@@ -24,4 +24,24 @@ class AiFaceCommandHistory extends Model
     {
         return $this->belongsTo(AiFaceDevice::class, 'sn', 'sn');
     }
+
+    public function scopeBySn($query, string $sn)
+    {
+        return $query->where('sn', $sn);
+    }
+
+    public function scopeByEnrollId($query, int|string $enrollId)
+    {
+        return $query->where('enroll_id', (string) $enrollId);
+    }
+
+    public function scopeByCmd($query, string $cmd)
+    {
+        return $query->where('cmd', $cmd);
+    }
+
+    public function scopeSuccessful($query)
+    {
+        return $query->where('result', true);
+    }
 }

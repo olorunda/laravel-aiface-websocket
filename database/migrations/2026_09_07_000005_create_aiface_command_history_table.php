@@ -16,10 +16,29 @@ return new class extends Migration
                 $table->id();
                 $table->string('sn')->index();
                 $table->string('cmd', 64)->index();
-                $table->text('request_payload')->nullable();
-                $table->text('response_payload')->nullable();
+                $table->string('enroll_id', 64)->nullable()->index();
+                $table->string('name', 255)->nullable()->index();
+                $table->tinyInteger('backupnum')->nullable();
+                $table->string('status', 32)->default('success')->index();
+                $table->longText('request_payload')->nullable();
+                $table->longText('response_payload')->nullable();
                 $table->boolean('result')->default(false);
                 $table->timestamps();
+            });
+        } else {
+            Schema::table($tableName, function (Blueprint $table) {
+                if (!Schema::hasColumn($table->getTable(), 'enroll_id')) {
+                    $table->string('enroll_id', 64)->nullable()->index();
+                }
+                if (!Schema::hasColumn($table->getTable(), 'name')) {
+                    $table->string('name', 255)->nullable()->index();
+                }
+                if (!Schema::hasColumn($table->getTable(), 'backupnum')) {
+                    $table->tinyInteger('backupnum')->nullable();
+                }
+                if (!Schema::hasColumn($table->getTable(), 'status')) {
+                    $table->string('status', 32)->default('success')->index();
+                }
             });
         }
     }

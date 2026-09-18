@@ -213,10 +213,10 @@ class AiFaceDeviceClient
         }
 
         return $this->send('delayeddelete', [
-            'enrollid'      => $enrollId,
-            'backupnum'     => $backupNum,
-            'delay'         => $delaySeconds,
-            'execute_at'    => $executeAt,
+            'enrollid' => $enrollId,
+            'backupnum' => $backupNum,
+            'delay' => $delaySeconds,
+            'execute_at' => $executeAt,
         ]);
     }
 
@@ -301,7 +301,8 @@ class AiFaceDeviceClient
     public function getAllUsers(int $page = 1, int $pageSize = 10, ?int $backupNum = null): array
     {
         $params = ['page' => $page, 'pagesize' => $pageSize];
-        if ($backupNum !== null) $params['backupnum'] = $backupNum;
+        if ($backupNum !== null)
+            $params['backupnum'] = $backupNum;
         return $this->send('getallusers', $params);
     }
 
@@ -354,8 +355,10 @@ class AiFaceDeviceClient
     public function getAllLog(int $page = 1, int $pageSize = 100, ?string $startTime = null, ?string $endTime = null, bool $fireLocalEvents = true): array
     {
         $params = ['page' => $page, 'pagesize' => $pageSize];
-        if ($startTime) $params['starttime'] = $startTime;
-        if ($endTime)   $params['endtime'] = $endTime;
+        if ($startTime)
+            $params['starttime'] = $startTime;
+        if ($endTime)
+            $params['endtime'] = $endTime;
         $response = $this->send('getalllog', $params);
         if ($fireLocalEvents && isset($response['record']) && is_array($response['record'])) {
             $this->dispatchAttendanceEvents($response['record']);
@@ -401,6 +404,16 @@ class AiFaceDeviceClient
                 $isClockOut = true;
             }
 
+            $enrollId = $rec['enrollid'] ?? $rec['enroll_id'] ?? $rec['user_id'] ?? $rec['id'] ?? 0;
+            $name = (string) ($rec['name'] ?? '');
+
+            if ($name === '' && !empty($enrollId)) {
+                $storage = new StorageService($this->config);
+                $name = (string) ($storage->getUserName($this->sn, $enrollId) ?? '');
+            }
+
+            $rec['enrollid'] = $enrollId;
+            $rec['name'] = $name;
             $rec['inout'] = $isClockOut ? 1 : 0;
             $dispatched[] = $rec;
 

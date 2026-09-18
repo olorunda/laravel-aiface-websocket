@@ -190,13 +190,14 @@ class DeviceConnection
     /**
      * Register a pending command awaiting device response.
      */
-    public function registerPendingCommand(string $cmd, float $timeout = 10.0, ?callable $callback = null): void
+    public function registerPendingCommand(string $cmd, float $timeout = 10.0, ?callable $callback = null, array $request = []): void
     {
         $this->pendingCommands[$cmd] = [
             'cmd' => $cmd,
             'timestamp' => microtime(true),
             'timeout' => $timeout,
             'callback' => $callback,
+            'request' => $request,
             'resolved' => false,
             'response' => null,
         ];

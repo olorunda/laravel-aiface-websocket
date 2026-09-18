@@ -32,7 +32,7 @@ class WebSocketServer
     protected int $port;
     protected string $path;
     protected array $config;
-    
+
     protected mixed $serverSocket = null;
     protected mixed $ipcSocket = null;
     protected mixed $ipcTcpSocket = null;
@@ -306,9 +306,9 @@ class WebSocketServer
         $acceptKey = base64_encode(sha1($secKey . '258EAFA5-E914-47DA-95CA-C5AB0DC85B11', true));
 
         $response = "HTTP/1.1 101 Switching Protocols\r\n" .
-                    "Upgrade: websocket\r\n" .
-                    "Connection: Upgrade\r\n" .
-                    "Sec-WebSocket-Accept: {$acceptKey}\r\n\r\n";
+            "Upgrade: websocket\r\n" .
+            "Connection: Upgrade\r\n" .
+            "Sec-WebSocket-Accept: {$acceptKey}\r\n\r\n";
 
         $conn->write($response);
         $conn->setHandshakeDone(true);
@@ -396,11 +396,14 @@ class WebSocketServer
                 $this->fireEvent(new UserDeleted($sn, $enrollId, $backupNum, $data));
             }
 
+            $pendingCmd = $conn->getPendingCommand($ret);
+            $reqPayload = $pendingCmd['request'] ?? [];
+
             // Resolve any awaiting synchronous command future
             $conn->resolvePendingCommand($ret, $data);
 
             $this->fireEvent(new CommandResponseReceived($sn ?: '', $ret, $data));
-            $this->storage->logCommand($sn ?: '', $ret, [], $data);
+            $this->storage->logCommand($sn ?: '', $ret, $reqPayload, $data, ($data['result'] ?? true) ? 'success' : 'failed');
         }
     }
 
@@ -536,6 +539,12 @@ class WebSocketServer
 
             $enrollId = $rec['enrollid'] ?? $rec['enroll_id'] ?? $rec['user_id'] ?? $rec['id'] ?? 0;
             $name = (string) ($rec['name'] ?? '');
+
+            // Fallback to resolving name from database / command history if empty in punch record
+            if ($name === '' && !empty($enrollId)) {
+                $name = (string) ($this->storage->getUserName($sn, $enrollId) ?? '');
+            }
+
             $time = (string) ($rec['time'] ?? $rec['punch_time'] ?? date('Y-m-d H:i:s'));
             $mode = (int) ($rec['mode'] ?? 3);
 
@@ -825,20 +834,20 @@ class WebSocketServer
             // Intercept delayed deletion command
             if ($cmd === 'delayeddelete') {
                 $enrollId = $payload['enrollid'] ?? null;
-                $backupNum = isset($payload['backupnum']) && $payload['backupnum'] !== '' ? (int)$payload['backupnum'] : null;
+                $backupNum = isset($payload['backupnum']) && $payload['backupnum'] !== '' ? (int) $payload['backupnum'] : null;
                 $delaySeconds = (int) ($payload['delay'] ?? 0);
                 $executeAt = (int) ($payload['execute_at'] ?? (time() + $delaySeconds));
 
                 $taskId = uniqid('del_', true);
                 $task = [
-                    'id'            => $taskId,
-                    'sn'            => $sn,
-                    'cmd'           => 'deleteuser',
-                    'enrollid'      => $enrollId,
-                    'backupnum'     => $backupNum,
+                    'id' => $taskId,
+                    'sn' => $sn,
+                    'cmd' => 'deleteuser',
+                    'enrollid' => $enrollId,
+                    'backupnum' => $backupNum,
                     'delay_seconds' => $delaySeconds,
-                    'execute_at'    => $executeAt,
-                    'created_at'    => time(),
+                    'execute_at' => $executeAt,
+                    'created_at' => time(),
                 ];
 
                 $this->scheduledTasks[$taskId] = $task;
@@ -856,15 +865,15 @@ class WebSocketServer
                 $this->log("info", sprintf('Scheduled delayed user deletion for device [%s] user [%s] at %s (in %ds)', $sn, $enrollId, date('Y-m-d H:i:s', $executeAt), $delaySeconds));
 
                 @fwrite($ipcClient, json_encode([
-                    'result'        => true,
-                    'scheduled'     => true,
-                    'task_id'       => $taskId,
-                    'sn'            => $sn,
-                    'enrollid'      => $enrollId,
-                    'backupnum'     => $backupNum,
+                    'result' => true,
+                    'scheduled' => true,
+                    'task_id' => $taskId,
+                    'sn' => $sn,
+                    'enrollid' => $enrollId,
+                    'backupnum' => $backupNum,
                     'delay_seconds' => $delaySeconds,
-                    'execute_at'    => date('Y-m-d H:i:s', $executeAt),
-                    'message'       => "Delete command scheduled to execute at " . date('Y-m-d H:i:s', $executeAt),
+                    'execute_at' => date('Y-m-d H:i:s', $executeAt),
+                    'message' => "Delete command scheduled to execute at " . date('Y-m-d H:i:s', $executeAt),
                 ]));
                 @fclose($ipcClient);
                 return;
@@ -875,16 +884,16 @@ class WebSocketServer
                 $enrollId = $payload['enrollid'] ?? null;
                 $cancelledCount = 0;
                 foreach ($this->scheduledTasks as $id => $task) {
-                    if ($task['sn'] === $sn && (string)$task['enrollid'] === (string)$enrollId) {
+                    if ($task['sn'] === $sn && (string) $task['enrollid'] === (string) $enrollId) {
                         unset($this->scheduledTasks[$id]);
                         $this->storage->cancelScheduledCommand($id);
                         $cancelledCount++;
                     }
                 }
                 @fwrite($ipcClient, json_encode([
-                    'result'    => true,
+                    'result' => true,
                     'cancelled' => $cancelledCount > 0,
-                    'count'     => $cancelledCount,
+                    'count' => $cancelledCount,
                 ]));
                 @fclose($ipcClient);
                 return;
@@ -895,8 +904,8 @@ class WebSocketServer
                 $tasks = array_values(array_filter($this->scheduledTasks, fn($t) => $t['sn'] === $sn && ($t['cmd'] ?? '') === 'deleteuser'));
                 @fwrite($ipcClient, json_encode([
                     'result' => true,
-                    'count'  => count($tasks),
-                    'data'   => $tasks,
+                    'count' => count($tasks),
+                    'data' => $tasks,
                 ]));
                 @fclose($ipcClient);
                 return;
@@ -907,8 +916,8 @@ class WebSocketServer
                 $tasks = array_values(array_filter($this->scheduledTasks, fn($t) => $t['sn'] === $sn));
                 @fwrite($ipcClient, json_encode([
                     'result' => true,
-                    'count'  => count($tasks),
-                    'data'   => $tasks,
+                    'count' => count($tasks),
+                    'data' => $tasks,
                 ]));
                 @fclose($ipcClient);
                 return;
@@ -924,7 +933,7 @@ class WebSocketServer
                     $cancelled = true;
                 }
                 @fwrite($ipcClient, json_encode([
-                    'result'    => true,
+                    'result' => true,
                     'cancelled' => $cancelled,
                 ]));
                 @fclose($ipcClient);
@@ -941,12 +950,12 @@ class WebSocketServer
                 if ($autoQueue) {
                     $taskId = $this->queueCommand($sn, $cmd, $payload, 'offline');
                     @fwrite($ipcClient, json_encode([
-                        'result'   => true,
-                        'queued'   => true,
-                        'task_id'  => $taskId,
-                        'sn'       => $sn,
-                        'cmd'      => $cmd,
-                        'message'  => "Device [{$sn}] is offline or not registered. Command [{$cmd}] has been queued and will be sent once the device comes online.",
+                        'result' => true,
+                        'queued' => true,
+                        'task_id' => $taskId,
+                        'sn' => $sn,
+                        'cmd' => $cmd,
+                        'message' => "Device [{$sn}] is offline or not registered. Command [{$cmd}] has been queued and will be sent once the device comes online.",
                     ]));
                 } else {
                     @fwrite($ipcClient, json_encode(['result' => false, 'error' => "Device [{$sn}] is offline or not registered"]));
@@ -957,7 +966,7 @@ class WebSocketServer
 
             // Send command down WebSocket to device
             $fullPayload = array_merge(['cmd' => $cmd, 'sn' => $sn], $payload);
-            
+
             // Register callback to capture response
             $resolved = false;
             $response = null;
@@ -965,7 +974,7 @@ class WebSocketServer
             $conn->registerPendingCommand($cmd, $timeout, function ($res) use (&$resolved, &$response) {
                 $resolved = true;
                 $response = $res;
-            });
+            }, $fullPayload);
 
             if (!$conn->sendJson($fullPayload)) {
                 $conn->removePendingCommand($cmd);
@@ -974,12 +983,12 @@ class WebSocketServer
                 if ($autoQueue) {
                     $taskId = $this->queueCommand($sn, $cmd, $payload, 'socket_write_failed');
                     @fwrite($ipcClient, json_encode([
-                        'result'   => true,
-                        'queued'   => true,
-                        'task_id'  => $taskId,
-                        'sn'       => $sn,
-                        'cmd'      => $cmd,
-                        'message'  => "Device [{$sn}] socket write failed. Command [{$cmd}] has been queued and will be sent once the device reconnects.",
+                        'result' => true,
+                        'queued' => true,
+                        'task_id' => $taskId,
+                        'sn' => $sn,
+                        'cmd' => $cmd,
+                        'message' => "Device [{$sn}] socket write failed. Command [{$cmd}] has been queued and will be sent once the device reconnects.",
                     ]));
                 } else {
                     @fwrite($ipcClient, json_encode(['result' => false, 'error' => 'Failed to write frame to device socket']));
@@ -1007,12 +1016,12 @@ class WebSocketServer
                 if ($autoQueue) {
                     $taskId = $this->queueCommand($sn, $cmd, $payload, 'command_timeout');
                     @fwrite($ipcClient, json_encode([
-                        'result'   => true,
-                        'queued'   => true,
-                        'task_id'  => $taskId,
-                        'sn'       => $sn,
-                        'cmd'      => $cmd,
-                        'message'  => "Command [{$cmd}] timed out waiting for device response. Command has been queued and will be sent once the device is online.",
+                        'result' => true,
+                        'queued' => true,
+                        'task_id' => $taskId,
+                        'sn' => $sn,
+                        'cmd' => $cmd,
+                        'message' => "Command [{$cmd}] timed out waiting for device response. Command has been queued and will be sent once the device is online.",
                     ]));
                 } else {
                     @fwrite($ipcClient, json_encode(['result' => false, 'error' => "Command [{$cmd}] timed out waiting for device response"]));
@@ -1101,13 +1110,13 @@ class WebSocketServer
 
         $minLevel = strtolower($logConfig['level'] ?? 'info');
         $priorities = [
-            'debug'     => 100,
-            'info'      => 200,
-            'notice'    => 250,
-            'warning'   => 300,
-            'error'     => 400,
-            'critical'  => 500,
-            'alert'     => 550,
+            'debug' => 100,
+            'info' => 200,
+            'notice' => 250,
+            'warning' => 300,
+            'error' => 400,
+            'critical' => 500,
+            'alert' => 550,
             'emergency' => 600,
         ];
 
@@ -1142,118 +1151,118 @@ class WebSocketServer
         if (isset($this->webhooks)) {
             if ($event instanceof UserClockedIn) {
                 $this->webhooks->dispatch('attendance.clockin', [
-                    'sn'        => $event->sn,
-                    'enrollid'  => $event->enrollId,
-                    'name'      => $event->name,
-                    'time'      => $event->time,
-                    'action'    => 'clock_in',
-                    'inout'     => $event->inout,
-                    'mode'      => $event->mode,
+                    'sn' => $event->sn,
+                    'enrollid' => $event->enrollId,
+                    'name' => $event->name,
+                    'time' => $event->time,
+                    'action' => 'clock_in',
+                    'inout' => $event->inout,
+                    'mode' => $event->mode,
                     'mode_desc' => $event->modeDesc,
-                    'aliasid'   => $event->aliasId,
-                    'image'     => $event->image,
-                    'record'    => $event->record,
+                    'aliasid' => $event->aliasId,
+                    'image' => $event->image,
+                    'record' => $event->record,
                 ]);
             } elseif ($event instanceof UserClockedOut) {
                 $this->webhooks->dispatch('attendance.clockout', [
-                    'sn'        => $event->sn,
-                    'enrollid'  => $event->enrollId,
-                    'name'      => $event->name,
-                    'time'      => $event->time,
-                    'action'    => 'clock_out',
-                    'inout'     => $event->inout,
-                    'mode'      => $event->mode,
+                    'sn' => $event->sn,
+                    'enrollid' => $event->enrollId,
+                    'name' => $event->name,
+                    'time' => $event->time,
+                    'action' => 'clock_out',
+                    'inout' => $event->inout,
+                    'mode' => $event->mode,
                     'mode_desc' => $event->modeDesc,
-                    'aliasid'   => $event->aliasId,
-                    'image'     => $event->image,
-                    'record'    => $event->record,
+                    'aliasid' => $event->aliasId,
+                    'image' => $event->image,
+                    'record' => $event->record,
                 ]);
             } elseif ($event instanceof AttendanceLogReceived) {
                 $this->webhooks->dispatch('attendance.logged', [
-                    'sn'          => $event->sn,
-                    'count'       => $event->count,
-                    'records'     => $event->records,
-                    'clock_ins'   => $event->getClockIns(),
-                    'clock_outs'  => $event->getClockOuts(),
+                    'sn' => $event->sn,
+                    'count' => $event->count,
+                    'records' => $event->records,
+                    'clock_ins' => $event->getClockIns(),
+                    'clock_outs' => $event->getClockOuts(),
                     'received_at' => date('Y-m-d H:i:s'),
                 ]);
             } elseif ($event instanceof DeviceRegistered) {
                 $this->webhooks->dispatch('device.registered', [
-                    'sn'            => $event->sn,
-                    'ip'            => $event->ip,
-                    'devinfo'       => $event->devinfo,
+                    'sn' => $event->sn,
+                    'ip' => $event->ip,
+                    'devinfo' => $event->devinfo,
                     'registered_at' => date('Y-m-d H:i:s'),
                 ]);
             } elseif ($event instanceof DeviceConnected) {
                 $this->webhooks->dispatch('device.connected', [
                     'connection_id' => $event->connectionId,
-                    'ip'            => $event->ip,
-                    'port'          => $event->port,
-                    'connected_at'  => date('Y-m-d H:i:s'),
+                    'ip' => $event->ip,
+                    'port' => $event->port,
+                    'connected_at' => date('Y-m-d H:i:s'),
                 ]);
             } elseif ($event instanceof DeviceDisconnected) {
                 $this->webhooks->dispatch('device.disconnected', [
-                    'sn'              => $event->sn,
-                    'connection_id'   => $event->connectionId,
-                    'reason'          => $event->reason,
+                    'sn' => $event->sn,
+                    'connection_id' => $event->connectionId,
+                    'reason' => $event->reason,
                     'disconnected_at' => date('Y-m-d H:i:s'),
                 ]);
             } elseif ($event instanceof UserPushed) {
                 $this->webhooks->dispatch('user.pushed', [
-                    'sn'        => $event->sn,
+                    'sn' => $event->sn,
                     'user_data' => $event->userData,
                     'pushed_at' => date('Y-m-d H:i:s'),
                 ]);
             } elseif ($event instanceof PinReceived) {
                 $this->webhooks->dispatch('pin.received', [
-                    'sn'   => $event->sn,
-                    'pin'  => $event->pin,
+                    'sn' => $event->sn,
+                    'pin' => $event->pin,
                     'time' => $event->time,
                 ]);
             } elseif ($event instanceof QrCodeScanned) {
                 $this->webhooks->dispatch('qrcode.scanned', [
-                    'sn'        => $event->sn,
+                    'sn' => $event->sn,
                     'qr_record' => $event->qrRecord,
                 ]);
             } elseif ($event instanceof GpsReceived) {
                 $this->webhooks->dispatch('gps.received', [
-                    'sn'         => $event->sn,
-                    'location'   => $event->location,
+                    'sn' => $event->sn,
+                    'location' => $event->location,
                     'satellites' => $event->satellites,
-                    'timestamp'  => $event->timeStamp,
+                    'timestamp' => $event->timeStamp,
                 ]);
             } elseif ($event instanceof IntercomCallReceived) {
                 $this->webhooks->dispatch('intercom.call', [
-                    'sn'         => $event->sn,
+                    'sn' => $event->sn,
                     'session_id' => $event->sessionId,
-                    'data'       => $event->data,
+                    'data' => $event->data,
                 ]);
             } elseif ($event instanceof UserDeleteScheduled) {
                 $this->webhooks->dispatch('user.delete_scheduled', [
-                    'sn'            => $event->sn,
-                    'enrollid'      => $event->enrollId,
-                    'backupnum'     => $event->backupNum,
+                    'sn' => $event->sn,
+                    'enrollid' => $event->enrollId,
+                    'backupnum' => $event->backupNum,
                     'delay_seconds' => $event->delaySeconds,
-                    'execute_at'    => $event->executeAt,
-                    'task_id'       => $event->taskId,
+                    'execute_at' => $event->executeAt,
+                    'task_id' => $event->taskId,
                 ]);
             } elseif ($event instanceof UserDeleted) {
                 $this->webhooks->dispatch('user.deleted', [
-                    'sn'        => $event->sn,
-                    'enrollid'  => $event->enrollId,
+                    'sn' => $event->sn,
+                    'enrollid' => $event->enrollId,
                     'backupnum' => $event->backupNum,
                 ]);
             } elseif ($event instanceof CommandQueued) {
                 $this->webhooks->dispatch('command.queued', [
-                    'sn'      => $event->sn,
+                    'sn' => $event->sn,
                     'command' => $event->command,
                     'task_id' => $event->taskId,
-                    'reason'  => $event->reason,
+                    'reason' => $event->reason,
                 ]);
             } elseif ($event instanceof CommandResponseReceived) {
                 $this->webhooks->dispatch('command.response', [
-                    'sn'       => $event->sn,
-                    'command'  => $event->command,
+                    'sn' => $event->sn,
+                    'command' => $event->command,
                     'response' => $event->response,
                 ]);
             }
@@ -1271,23 +1280,24 @@ class WebSocketServer
         $backupNum = $payload['backupnum'] ?? null;
 
         $task = [
-            'id'            => $taskId,
-            'task_id'       => $taskId,
-            'sn'            => $sn,
-            'cmd'           => $cmd,
-            'enrollid'      => $enrollId !== null ? (string) $enrollId : null,
-            'backupnum'     => $backupNum !== null ? (int) $backupNum : null,
+            'id' => $taskId,
+            'task_id' => $taskId,
+            'sn' => $sn,
+            'cmd' => $cmd,
+            'enrollid' => $enrollId !== null ? (string) $enrollId : null,
+            'backupnum' => $backupNum !== null ? (int) $backupNum : null,
             'delay_seconds' => 0,
-            'execute_at'    => $now,
-            'status'        => 'pending',
-            'payload'       => array_merge(['cmd' => $cmd, 'sn' => $sn], $payload),
-            'created_at'     => $now,
-            'reason'         => $reason,
+            'execute_at' => $now,
+            'status' => 'pending',
+            'payload' => array_merge(['cmd' => $cmd, 'sn' => $sn], $payload),
+            'created_at' => $now,
+            'reason' => $reason,
             'offline_warned' => true,
         ];
 
         $this->scheduledTasks[$taskId] = $task;
         $this->storage->saveScheduledCommand($task);
+        $this->storage->logCommand($sn, $cmd, $payload, [], 'queued');
 
         $this->fireEvent(new CommandQueued($sn, $cmd, $payload, $taskId, $reason));
 
@@ -1323,6 +1333,7 @@ class WebSocketServer
 
                         $this->storage->markScheduledCommandExecuted($id, ['executed_at' => date('Y-m-d H:i:s')]);
                         $this->storage->deleteUser($sn, $enrollId, $backupNum);
+                        $this->storage->logCommand($sn, 'deleteuser', ['enrollid' => $enrollId, 'backupnum' => $backupNum], ['result' => true], 'sent');
                         $this->fireEvent(new UserDeleted($sn, $enrollId, $backupNum));
 
                         $this->log("info", sprintf('Effected scheduled user deletion on device [%s] for user [%s] (backupnum: %d)', $sn, $enrollId, $backupNum));
@@ -1340,8 +1351,9 @@ class WebSocketServer
 
                         $this->storage->markScheduledCommandExecuted($id, [
                             'executed_at' => date('Y-m-d H:i:s'),
-                            'sent'        => true,
+                            'sent' => true,
                         ]);
+                        $this->storage->logCommand($sn, $cmd, $payload, ['result' => true], 'sent');
 
                         $this->log("info", sprintf('Dispatched queued command [%s] to online device [%s] (task: %s)', $cmd, $sn, $id));
                         unset($this->scheduledTasks[$id]);

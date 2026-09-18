@@ -9,3 +9,4 @@
 *.sqlite-wal
 *.sqlite-shm
 *.code-workspace
+composer.lock

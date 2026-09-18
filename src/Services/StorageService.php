@@ -126,10 +126,28 @@ class StorageService
                     }
                 }
 
+                $enrollId = (string) ($record['enrollid'] ?? '');
+                $name = (string) ($record['name'] ?? '');
+
+                // Fallback to resolving name from database/command history if empty in log
+                if ($name === '' && !empty($enrollId)) {
+                    $name = (string) ($this->getUserName($sn, $enrollId) ?? '');
+                }
+
+                // If photo is attached in base64, save to storage disk
+                if ($storePhotos && !empty($record['image']) && is_string($record['image'])) {
+                    $imageData = base64_decode($record['image']);
+                    if ($imageData) {
+                        $filename = sprintf('%s/%s_%s_%s.jpg', $photoPath, $sn, $enrollId ?: '0', time() . '_' . bin2hex(random_bytes(2)));
+                        Storage::disk($photoDisk)->put($filename, $imageData);
+                        $imagePath = $filename;
+                    }
+                }
+
                 $insertRows[] = [
                     'sn' => $sn,
-                    'enrollid' => (string) ($record['enrollid'] ?? ''),
-                    'name' => (string) ($record['name'] ?? ''),
+                    'enrollid' => $enrollId,
+                    'name' => $name,
                     'punch_time' => (string) ($record['time'] ?? $now),
                     'mode' => (int) ($record['mode'] ?? 0),
                     'inout' => (int) ($record['inout'] ?? 0),
@@ -171,13 +189,15 @@ class StorageService
 
             // 1. Upsert base user
             $userData = [
-                'name' => $data['name'] ?? '',
                 'admin' => (int) ($data['admin'] ?? 0),
                 'aliasid' => (string) ($data['aliasid'] ?? ''),
                 'enable' => (int) ($data['enable'] ?? 1),
                 'updated_at' => $now,
             ];
 
+            if (!empty($data['name'])) {
+                $userData['name'] = (string) $data['name'];
+            }
             if (isset($data['card'])) $userData['card'] = (string) $data['card'];
             if (isset($data['pwd']))  $userData['pwd'] = (string) $data['pwd'];
 
@@ -185,6 +205,7 @@ class StorageService
             if ($userExists) {
                 DB::table($userTable)->where('sn', $sn)->where('enrollid', $enrollId)->update($userData);
             } else {
+                $userData['name'] = $userData['name'] ?? ($data['name'] ?? '');
                 $userData['sn'] = $sn;
                 $userData['enrollid'] = $enrollId;
                 $userData['created_at'] = $now;
@@ -220,6 +241,9 @@ class StorageService
                     'updated_at' => $now,
                 ]);
             }
+
+            // Also log to command history
+            $this->logCommand($sn, 'senduser', $data, ['result' => true, 'enrollid' => $enrollId, 'backupnum' => $backupNum]);
         } catch (\Throwable $e) {
             $this->log('warning', 'StorageService::saveUserReport failed: ' . $e->getMessage());
         }
@@ -248,25 +272,209 @@ class StorageService
     }
 
     /**
-     * Audit log for commands dispatched and responses received.
+     * Audit log for commands dispatched to device and responses received.
+     * Extracts enroll_id, name, backupnum, and updates user directory if name is present.
      */
-    public function logCommand(string $sn, string $cmd, array $request, array $response): void
-    {
+    public function logCommand(
+        string $sn,
+        string $cmd,
+        array $request = [],
+        array $response = [],
+        string $status = 'success'
+    ): void {
         if (!$this->enabled) {
             return;
         }
 
         try {
-            DB::table($this->table('command_history'))->insert([
+            $now = date('Y-m-d H:i:s');
+            $userTable = $this->table('users');
+            $historyTable = $this->table('command_history');
+
+            // Extract enroll_id from request, response, or nested record
+            $enrollId = $request['enrollid']
+                ?? $request['enroll_id']
+                ?? $request['user_id']
+                ?? $response['enrollid']
+                ?? $response['enroll_id']
+                ?? null;
+
+            // Extract name from request, response, or nested record
+            $name = $request['name'] ?? $response['name'] ?? null;
+
+            // Extract backupnum
+            $backupNum = isset($request['backupnum']) && $request['backupnum'] !== ''
+                ? (int) $request['backupnum']
+                : (isset($response['backupnum']) && $response['backupnum'] !== '' ? (int) $response['backupnum'] : null);
+
+            // Check if single record object is inside request/response
+            if (isset($request['record']) && is_array($request['record']) && !isset($request['record'][0])) {
+                if ($enrollId === null) {
+                    $enrollId = $request['record']['enrollid'] ?? $request['record']['enroll_id'] ?? null;
+                }
+                if ($name === null) {
+                    $name = $request['record']['name'] ?? null;
+                }
+                if ($backupNum === null && isset($request['record']['backupnum'])) {
+                    $backupNum = (int) $request['record']['backupnum'];
+                }
+            }
+
+            if (isset($response['record']) && is_array($response['record']) && !isset($response['record'][0])) {
+                if ($enrollId === null) {
+                    $enrollId = $response['record']['enrollid'] ?? $response['record']['enroll_id'] ?? null;
+                }
+                if ($name === null) {
+                    $name = $response['record']['name'] ?? null;
+                }
+                if ($backupNum === null && isset($response['record']['backupnum'])) {
+                    $backupNum = (int) $response['record']['backupnum'];
+                }
+            }
+
+            // If name is still not found but enrollId is known, try looking up previously stored name
+            if (($name === null || $name === '') && !empty($enrollId)) {
+                $name = $this->getUserName($sn, (string) $enrollId);
+            }
+
+            // Sync user to aiface_users table if non-empty enroll_id and name are present
+            if (!empty($enrollId) && !empty($name)) {
+                $enrollIdStr = (string) $enrollId;
+                $userExists = DB::table($userTable)->where('sn', $sn)->where('enrollid', $enrollIdStr)->exists();
+                if ($userExists) {
+                    DB::table($userTable)->where('sn', $sn)->where('enrollid', $enrollIdStr)->update([
+                        'name' => (string) $name,
+                        'updated_at' => $now,
+                    ]);
+                } else {
+                    DB::table($userTable)->insert([
+                        'sn' => $sn,
+                        'enrollid' => $enrollIdStr,
+                        'name' => (string) $name,
+                        'enable' => 1,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ]);
+                }
+            }
+
+            // Also handle batch user records (e.g. setusername, getallusers)
+            $batchRecords = $request['record'] ?? $response['record'] ?? $request['records'] ?? $response['records'] ?? [];
+            if (is_string($batchRecords)) {
+                $batchRecords = json_decode($batchRecords, true) ?? [];
+            }
+            if (is_array($batchRecords) && isset($batchRecords[0]) && is_array($batchRecords[0])) {
+                foreach ($batchRecords as $userItem) {
+                    if (!is_array($userItem)) {
+                        continue;
+                    }
+                    $uEnrollId = $userItem['enrollid'] ?? $userItem['enroll_id'] ?? null;
+                    $uName = $userItem['name'] ?? null;
+                    if (!empty($uEnrollId) && !empty($uName)) {
+                        $uEnrollIdStr = (string) $uEnrollId;
+                        $uExists = DB::table($userTable)->where('sn', $sn)->where('enrollid', $uEnrollIdStr)->exists();
+                        if ($uExists) {
+                            DB::table($userTable)->where('sn', $sn)->where('enrollid', $uEnrollIdStr)->update([
+                                'name' => (string) $uName,
+                                'updated_at' => $now,
+                            ]);
+                        } else {
+                            DB::table($userTable)->insert([
+                                'sn' => $sn,
+                                'enrollid' => $uEnrollIdStr,
+                                'name' => (string) $uName,
+                                'enable' => 1,
+                                'created_at' => $now,
+                                'updated_at' => $now,
+                            ]);
+                        }
+                    }
+                }
+            }
+
+            $result = (bool) ($response['result'] ?? ($status === 'success'));
+
+            DB::table($historyTable)->insert([
                 'sn' => $sn,
                 'cmd' => $cmd,
-                'request_payload' => json_encode($request),
-                'response_payload' => json_encode($response),
-                'result' => (bool) ($response['result'] ?? false),
-                'created_at' => date('Y-m-d H:i:s'),
+                'enroll_id' => $enrollId !== null ? (string) $enrollId : null,
+                'name' => !empty($name) ? (string) $name : null,
+                'backupnum' => $backupNum,
+                'status' => $status,
+                'request_payload' => !empty($request) ? json_encode($request) : null,
+                'response_payload' => !empty($response) ? json_encode($response) : null,
+                'result' => $result,
+                'created_at' => $now,
+                'updated_at' => $now,
             ]);
         } catch (\Throwable $e) {
-            // Silently ignore or debug
+            $this->log('warning', 'StorageService::logCommand failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Resolve user name by enrollid and device SN (with cross-device and command history fallback).
+     */
+    public function getUserName(string $sn, int|string $enrollId): ?string
+    {
+        if (!$this->enabled || $enrollId === '' || $enrollId === null) {
+            return null;
+        }
+
+        try {
+            $enrollIdStr = (string) $enrollId;
+            $userTable = $this->table('users');
+            $historyTable = $this->table('command_history');
+
+            // 1. Check aiface_users table for exact SN + enrollid match
+            $user = DB::table($userTable)
+                ->where('sn', $sn)
+                ->where('enrollid', $enrollIdStr)
+                ->whereNotNull('name')
+                ->where('name', '!=', '')
+                ->value('name');
+
+            if (!empty($user)) {
+                return (string) $user;
+            }
+
+            // 2. Check aiface_users table across all devices for this enrollid
+            $user = DB::table($userTable)
+                ->where('enrollid', $enrollIdStr)
+                ->whereNotNull('name')
+                ->where('name', '!=', '')
+                ->orderByDesc('id')
+                ->value('name');
+
+            if (!empty($user)) {
+                return (string) $user;
+            }
+
+            // 3. Check command_history table for latest command with this SN + enroll_id and a non-empty name
+            $histName = DB::table($historyTable)
+                ->where('sn', $sn)
+                ->where('enroll_id', $enrollIdStr)
+                ->whereNotNull('name')
+                ->where('name', '!=', '')
+                ->orderByDesc('id')
+                ->value('name');
+
+            if (!empty($histName)) {
+                return (string) $histName;
+            }
+
+            // 4. Check command_history table across any device for this enroll_id
+            $histName = DB::table($historyTable)
+                ->where('enroll_id', $enrollIdStr)
+                ->whereNotNull('name')
+                ->where('name', '!=', '')
+                ->orderByDesc('id')
+                ->value('name');
+
+            return !empty($histName) ? (string) $histName : null;
+        } catch (\Throwable $e) {
+            $this->log('debug', 'StorageService::getUserName error: ' . $e->getMessage());
+            return null;
         }
     }
 
